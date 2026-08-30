@@ -4,6 +4,63 @@ I reviewed the supplied `periods` tree at `b7bc4eac98d583afe474aade534da9478f94d
 
 One limitation: I could not run a clean 17/18 source-build/regression matrix in this environment because the supplied PostgreSQL git trees require generated parser files and the necessary bison/flex installation was unavailable. So below I distinguish source-proven bugs from things I consider risks. Upstream #39 independently reports that v1.2.2 **compiles on PG18 but fails regression tests**, which is consistent with what I found: I see no obvious removed C API, but plenty of behavior-sensitive SQL. ([github.com][1])
 
+# Status of this review's findings (2026-08-30)
+
+The "relatively easy" items were fixed on top of extension version **1.2.4**
+(`periods--1.2--1.2.4.sql`), each with a capture-first regression test in the
+`bugfixes` suite, a codex-reviewed plan, and verification on PostgreSQL 17.11
+and 18.6.  Items this review shares with claude.md that were already fixed in
+the earlier passes: T1/#27 (§2.2), C1+C2 (§4.1), F2/F4/F5 (§2.3), H6 (§6.1).
+H7 stays a documented design decision (§5.3).
+
+- **T3 fixed** (`ae53023`, `b81cbc7`): the unique-key collision check in
+  `add_system_time_period()` is scoped to the table; a same-named column in
+  another table's temporal unique key no longer blocks it.
+- **T2 fixed** (`78b1df9`, `4a57f27`, `97c2ecf`): the period's own bound
+  columns are rejected in `excluded_column_names` by both SQL entry points,
+  and the C triggers additionally ignore such catalog rows (legacy rows,
+  dump/restore), closing the row-start forgery / missing-history hole.
+- **D2 / issue #14 fixed** (`dd6b830`, `e85a58a`, `bf89251`): all ten
+  `%I`-on-regrole sites in `add_system_versioning()` and `health_checks()`
+  now render owners with `%s`.  Found alongside it, not in this review: the
+  grant-propagation loop rendered PUBLIC (grantee OID 0) as `-`, so a base
+  table with `GRANT SELECT TO PUBLIC` could not get versioning at all.
+- **D6 fixed** (`8b3edaa`, `d8b8efb`): adopting a pre-existing history
+  relation requires relkind 'r', with a precise error.  No working
+  configuration is lost: every other relkind already failed later behind
+  misleading errors (a partitioned or materialized-view history dies at
+  generated 'REVOKE ALL ON ERROR ...' SQL), so the code comment's
+  partitioned-history aspiration was never reachable.
+- **D5 fixed** (`8ffd32e`): `health_checks()` names the history table (not
+  the base table) in its persistence error, with the correct reason; the
+  existing health_checks test had the wrong name baked into its expected
+  output, which flips with the fix.
+- **T5+T6+§9 cardinality fixed** (`04d4f4b`, `ed3fc0c`): `add_foreign_key()`
+  rejects MATCH PARTIAL, unsupported and NULL actions, a NULL match type,
+  and empty/mismatched column lists up front (`cardinality()`, so
+  multidimensional arrays are measured the way the machinery's `unnest()`
+  flattens them).  The §1839 message complaint turned out to be a duplicated
+  check shadowing a correctly-worded one; the duplicate is removed.
+- **H2 fixed** (`19fb4ec`, `2a096bc`): `add_period(..., 'system_time')`
+  forwards `bounds_check_constraint` and rejects a supplied `range_type`
+  (which may not be tstzrange — SYSTEM_TIME columns can be date or plain
+  timestamp, mapping to daterange/tsrange).
+- **F3 fixed, with corrections** (`4798d43`, `bb12747`): the claim is wrong
+  for the types it names — date/timestamp/timestamptz endpoints survive
+  because PostgreSQL's datetime parsers skip double quotes (verified).  The
+  real exposure is subtypes with strict parsers (e.g. a range over uuid),
+  failing in the endpoint tests AND in a third interpolation site this
+  review missed: the central UPDATE's row filter.  All three sites now
+  unwrap the jsonb scalar with `#>> '{}'`, and NULL bounds get a real error.
+  Container-ish subtypes (arrays, hstore, jsonb) remain unsupported in
+  FOR PORTION OF, unchanged from before; the fully general fix is the typed
+  `EXECUTE ... USING` rewrite this review itself defers (F2).
+
+Not addressed here, deliberately (larger redesigns or out of "easy" scope,
+matching the claude.md deferrals): S1/S2/S3 (§3.2/§3.3), T4, T7, C3, C4,
+F1, F6, R1–R4, H1, H3, H4, H5, D1/#22, D3, D4, and the §9 leftovers not
+listed above.
+
 # Bottom line for PostgreSQL 18
 
 At the C-source level, I found no obvious PG17→PG18 showstopper among the APIs `periods.c` directly uses. Things such as `table_open`, `convert_tuples_by_name`, `execute_attr_map_tuple`, `heap_modify_tuple_by_cols`, SPI, and the trigger interfaces it relies on are still available in the supplied PG18/master sources.

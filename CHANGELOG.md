@@ -30,6 +30,14 @@ New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
     breaks user-defined range types), and they do not verify table ownership
     before running as the definer.  See `ai-code-reviews/claude.md` §3.2/§3.3.
 
+  - The SYSTEM_TIME period's own start/end columns can no longer be named in
+    `excluded_column_names`.  Excluding a bound column disabled both the
+    `GENERATED ALWAYS` enforcement and the history write for updates touching
+    only that column, letting anyone with UPDATE privilege forge row-start
+    timestamps without leaving history.  Both SQL entry points now reject the
+    period columns, and the C triggers ignore such catalog entries outright —
+    also covering rows written by older versions or restored from dumps.
+
 ### Removed
 
   - Support for PostgreSQL 9.5 and 9.6.  Fresh installations of 1.2.4 rely on
@@ -84,6 +92,53 @@ New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
 
   - `TRUNCATE` now works on versioned tables whose history table has a
     schema-qualified name longer than 63 bytes.
+
+  - `add_system_versioning()` and `health_checks()` no longer double-quote
+    role names: a table owned by a role whose name needs quoting (mixed case,
+    spaces) can get system versioning, and ownership realignment after
+    `ALTER TABLE ... OWNER TO` works for such roles (issue #14).  The
+    grant-propagation loop also learned to spell PUBLIC — which `aclexplode()`
+    reports as OID 0 — instead of emitting `GRANT ... TO owner, -`, so a base
+    table with `GRANT SELECT TO PUBLIC` can be versioned.
+
+  - `add_system_time_period()` no longer refuses column names merely because
+    a temporal unique key on some *other* table uses the same names as scalar
+    key columns; the collision check is scoped to the table getting the
+    period.
+
+  - `add_foreign_key()` validates its arguments up front: the unimplemented
+    `MATCH PARTIAL` and `CASCADE`/`SET NULL`/`SET DEFAULT` actions, NULL
+    match/action parameters, an empty referencing-column list, and
+    referencing/referenced column-count mismatches are rejected with clear
+    errors.  They used to surface later as catalog constraint violations,
+    'null values cannot be formatted as an SQL identifier', or — for
+    `MATCH PARTIAL` — a deferred trigger exploding at COMMIT once a
+    partially-NULL key arrived.  A SYSTEM_TIME column in the referencing list
+    is reported as '... must not be part of foreign keys' instead of the
+    misworded UNIQUE-keys message.
+
+  - `add_period(..., 'system_time')` forwards `bounds_check_constraint` to
+    `add_system_time_period()` instead of silently ignoring it, and rejects a
+    supplied `range_type` (SYSTEM_TIME derives the range type from the column
+    datatype).
+
+  - `add_system_versioning()` refuses to adopt a pre-existing history
+    *relation* that is not a regular table, with a clear message; a view used
+    to produce a misleading "not compatible" error and a materialized view a
+    'REVOKE ALL ON ERROR ...' syntax error.
+
+  - `health_checks()` names the actual history table in its persistence
+    error instead of the base table, and gives the real reason (it is used in
+    SYSTEM VERSIONING; history tables never have periods).
+
+  - `FOR PORTION OF` updates work for period datatypes with strict input
+    parsers (e.g. a range over `uuid`): the endpoint comparisons and the row
+    filter no longer leak JSON string quoting into SQL literals.  Datetime
+    subtypes only ever worked because their parsers skip double quotes.
+    Setting a portion bound to NULL raises 'portion bounds cannot be NULL'
+    instead of a nonsense cast error.  Subtypes whose text form is not their
+    JSON scalar rendering (containers, `jsonb` itself) remain unsupported in
+    `FOR PORTION OF`, as before.
 
 ## [1.2] – 2020-09-21
 
