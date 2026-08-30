@@ -391,20 +391,42 @@ BEGIN
     END IF;
 
     IF pre_assigned THEN
-        EXECUTE format('INSERT INTO %s (%s) VALUES (%s)',
+        /*
+         * Insert through jsonb_populate_record() so that arrays, composites,
+         * and friends are converted from their JSON form to their real types
+         * instead of being quoted as JSON text.  The explicit column list
+         * keeps the stripped generated columns out of the INSERT so they
+         * regenerate.  (JSON keeps no array bounds, so a non-1-based array's
+         * copies are renumbered from 1.)
+         */
+        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r',
             info.table_name,
-            (SELECT string_agg(quote_ident(key), ', ' ORDER BY key) FROM jsonb_each_text(pre_row)),
-            (SELECT string_agg(quote_nullable(value), ', ' ORDER BY key) FROM jsonb_each_text(pre_row)));
+            (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
+            (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
+            pre_row);
     END IF;
 
-    EXECUTE format('UPDATE %s SET %s WHERE %s AND %I > %L AND %I < %L',
+    /*
+     * Assign the changed columns from a jsonb_populate_record() of the new
+     * row, for the same complex-type reasons as the slice INSERTs around
+     * this.  Which columns changed is still decided on the jsonb text
+     * representations, as before.
+     */
+    EXECUTE format('UPDATE %1$s SET (%2$s) = (SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r) WHERE %5$s AND %6$I > %7$L AND %8$I < %9$L',
                    info.table_name,
-                   (SELECT string_agg(format('%I = %L', j.key, j.value), ', ')
+                   (SELECT string_agg(quote_ident(j.key), ', ' ORDER BY j.key)
                     FROM (SELECT key, value FROM jsonb_each_text(new_row)
                           EXCEPT ALL
                           SELECT key, value FROM jsonb_each_text(jold)
                          ) AS j
                    ),
+                   (SELECT string_agg('r.' || quote_ident(j.key), ', ' ORDER BY j.key)
+                    FROM (SELECT key, value FROM jsonb_each_text(new_row)
+                          EXCEPT ALL
+                          SELECT key, value FROM jsonb_each_text(jold)
+                         ) AS j
+                   ),
+                   new_row,
                    where_clause,
                    info.end_column_name,
                    fromval,
@@ -413,10 +435,12 @@ BEGIN
                   );
 
     IF post_assigned THEN
-        EXECUTE format('INSERT INTO %s (%s) VALUES (%s)',
+        /* Same jsonb_populate_record() dance as the pre_assigned INSERT. */
+        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r',
             info.table_name,
-            (SELECT string_agg(quote_ident(key), ', ' ORDER BY key) FROM jsonb_each_text(post_row)),
-            (SELECT string_agg(quote_nullable(value), ', ' ORDER BY key) FROM jsonb_each_text(post_row)));
+            (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(post_row) AS u (k)),
+            (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(post_row) AS u (k)),
+            post_row);
     END IF;
 
     RETURN NEW;
