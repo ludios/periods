@@ -9,6 +9,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 ### Fixed
 
+## [1.2.4] – 2026-08-30
+
+New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
+`ALTER EXTENSION periods UPDATE`.
+
+### Added
+
+  - New regression test file `bugfixes` covering everything below.
+
+### Fixed
+
+  - `drop_period()` of an application-time period no longer tears down the
+    table's `system_time` triggers and SYSTEM VERSIONING machinery.
+
+  - Temporal foreign keys now prevent deleting or updating a referenced row
+    while a child's period lies strictly inside the removed interval
+    (issue #27); previously only children *containing* the whole interval
+    were detected, so such parents could be changed and the children silently
+    orphaned.
+
+  - Temporal foreign keys where the referencing and referenced columns have
+    the same name work now.  The coverage query correlated the key columns
+    without table qualification, so `id = id` degenerated into a tautology:
+    orphans of other keys could be accepted and valid rows were spuriously
+    rejected.  FK violations also report SQLSTATE 23503 (foreign_key_violation)
+    instead of P0001.
+
+  - `FOR PORTION OF` updates: the edited row is matched by its primary key
+    only.  It used to be matched on the columns of *every* constraint, so a
+    NULL in any CHECK/UNIQUE/FOREIGN KEY-constrained column made the UPDATE
+    silently do nothing while still inserting the leftover slices.
+
+  - The `insert_into_history` plan cache re-plans exactly when the history
+    table's qualified name (or row type) changes.  An inverted comparison made
+    it re-plan on every history write, leaking one cached plan per write, and
+    run a stale plan after the history table changed both schema and name.
+
+  - `drop_protection` now guards the periods' bounds `CHECK` constraints, and
+    `health_checks` re-enforces `NOT NULL` on period bound columns.
+
+  - `drop_period(..., purge => true)` purges cleanly: for `system_time` with
+    active versioning it no longer fails on a doubly-dropped constraint, and a
+    bounds constraint shared by two periods survives until the last one is
+    purged.
+
+  - `TRUNCATE` now works on versioned tables whose history table has a
+    schema-qualified name longer than 63 bytes.
+
 ## [1.2] – 2020-09-21
 
 ### Added

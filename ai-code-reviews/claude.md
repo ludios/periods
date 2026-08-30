@@ -10,6 +10,30 @@ cross-checked by hand and (for the FK bug) by `codex`.
 
 ---
 
+## Status (2026-08-30)
+
+Fixes ship as extension version **1.2.4** (`periods--1.2--1.2.4.sql`; a full install script is
+generated at build time). Every fix has a regression test in the new `bugfixes` suite, committed
+first with the buggy behavior captured, then flipped by the fix commit. All work verified on
+PostgreSQL 17.11 and 18.6.
+
+- **Fixed:** §2.1 (`b8f297f`..`bc2f0c6`), §2.3(b) (`4245542`, `0e32b81`), §4.1 (`5316fff`, `07a62a5`),
+  §2.2/#27 (`202d17a`..`3b4fb07`), §5.1 (`233ed73`, `001785f`), §5.2 (`0c3bbba`, `6d4ffa8`),
+  §6.1 (`d1346ec`, `cce0a82`), §6.4+§6.5 (`c35ff34`).
+- **Found while fixing** (not in the review): same-named FK columns broke the coverage check
+  entirely (fixed, `bfe662a`); `drop_period('t','system_time','CASCADE',purge=>true)` with active
+  versioning always failed on a double-dropped constraint (fixed, `6d4ffa8`); plpgsql
+  `BEGIN/EXCEPTION` cannot be used in the FK triggers (they run as deferred triggers during
+  COMMIT, where subtransactions crash cassert builds — discovered by the new tests).
+- **Not yet fixed:** §2.3(a) and §2.3(c) — plans are written and codex-review-ready
+  (`plan_23ac.md` in the session scratchpad); implementation deliberately held because the codex
+  workspace ran out of credits mid-session and the plan-review gate could not run.
+- **Deliberately left as design decisions:** §5.3 (TRUNCATE-wipes-history is by design; document loudly
+  or block — upstream's call), §6.2 (ADD COLUMN vs history divergence), §6.3 (PG18 leftover named
+  NOT NULL constraints on purge; benign).
+
+---
+
 ## 1. PostgreSQL 18 status — the good news first
 
 **All 15 regression tests pass on both PostgreSQL 17.11 and 18.6 with the current tree**, matching each test to its
