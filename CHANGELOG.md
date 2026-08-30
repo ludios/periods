@@ -14,6 +14,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
 `ALTER EXTENSION periods UPDATE`.
 
+### Security
+
+  - `add_system_versioning()` no longer allows SQL injection through a
+    SYSTEM_TIME period's start/end column names.  The generated temporal helper
+    functions (`…__as_of`, `…__between`, `…__between_symmetric`, `…__from_to`)
+    embedded those column names with `%I` inside a single-quoted function-body
+    literal; a name containing a single quote (combined with
+    `check_function_bodies = off`) could run arbitrary statements as the
+    `SECURITY DEFINER` owner.  The bodies are now built with an inner `format()`
+    and embedded via `%L`.
+
+    Two further SECURITY DEFINER weaknesses from the same review remain open and
+    need a larger redesign: the functions do not pin `search_path` (a naive pin
+    breaks user-defined range types), and they do not verify table ownership
+    before running as the definer.  See `ai-code-reviews/claude.md` §3.2/§3.3.
+
 ### Removed
 
   - Support for PostgreSQL 9.5 and 9.6.  Fresh installations of 1.2.4 rely on

@@ -30,6 +30,36 @@ PostgreSQL 17.11 and 18.6.
   columns never are) and §2.3(c) (`8df93f6`, `c6fdf71` — slice INSERTs and the central UPDATE go
   through `jsonb_populate_record`, the latter over changed columns only; array lower bounds are
   documented as not preserved).  Every commit batch has a completed codex review.
+- **Security (§3), third pass:**
+  - **§3.1 fixed** (`115026f`, `93d9c92`): the SQL injection through period column names in
+    `add_system_versioning` is closed — the generated helper-function bodies are built with an inner
+    `format()` and embedded via `%L`. The end-to-end escalation (unprivileged role → superuser) was
+    reproduced first and no longer fires. Codex reviewed plan and commit; no findings.
+  - **§3.2 not fixed — larger redesign required.** The proposed blanket `SET search_path =
+    pg_catalog, pg_temp` on the 19 SECURITY DEFINER functions was verified to *regress real
+    functionality*: under a pinned path `add_unique_key`/`add_foreign_key` fail for user-defined
+    range types (the range constructor renders as a broken single identifier `"public.intrange"`),
+    `health_checks`/`acl` behavior changes, and every regclass in a message becomes schema-qualified
+    — 8 regression tests break on both PG 17 and 18. A correct fix needs either full
+    `pg_catalog.`/`OPERATOR(pg_catalog.…)` qualification of every built-in call across all 19
+    functions (operators included) plus fixing the latent `%I`-on-regtype emission bugs, or a
+    privilege-separated design where user-type operations run as the invoker. Too invasive to land
+    confidently here. Both the empirical breakage and this conclusion were confirmed by codex.
+  - **§3.3 not fixed — larger authorization redesign required.** The review's suggested predicate
+    `pg_has_role(current_user, relowner, 'USAGE')` is *wrong*: inside SECURITY DEFINER
+    `current_user` is the superuser definer, so it never rejects (verified). `session_user` is the
+    only non-masked identity and blocks the basic attack, but a codex call-path audit surfaced that a
+    correct, complete fix must also: choose an ownership-identity policy (session_user ignores
+    `SET ROLE`; exact semantics need `GetOuterUserId()` via C); split `drop_foreign_key` into a
+    PUBLIC owner-checked entry and a REVOKE'd internal cascade worker; restructure or reject the
+    NULL/bulk mode of `add_for_portion_view`/`drop_for_portion_view` (the bulk path is currently
+    unreachable anyway — `LOCK TABLE NULL`); stop `add_system_versioning` from adopting and
+    reassigning an existing history table owned by someone else (takeover); enforce REFERENCES on the
+    parent in `add_foreign_key` (it installs triggers on the referenced table); check `CREATE` on the
+    schema for created sibling objects; and lock the table before the ownership check (TOCTOU).
+    Moreover, while §3.2 is open this guard does **not** remove the escalation path for a legitimate
+    table owner (own a table → pass the guard → hijack the unpinned search_path). Deferred as a
+    dedicated security-hardening effort rather than shipped partially.
 - **Support change (user decision):** PostgreSQL 9.5/9.6 dropped (`cebff70`) instead of shipping a
   generated full 1.2.4 install script; fresh installs use the PG10+ chained-script capability.
   This also mooted the request for a fabricated pre-10 `bugfixes` expected-output variant.
@@ -194,7 +224,7 @@ loses fidelity for other types whose JSON form differs from their input literal.
 These require the extension to be installed by a superuser (the default `CREATE EXTENSION periods`) and its
 functions to be callable by unprivileged roles — which they are, because nothing `REVOKE`s `EXECUTE` from `PUBLIC`.
 
-### 3.1 SQL injection via unvalidated period column names → arbitrary code as the definer **[reproduced: 18]**
+### 3.1 SQL injection via unvalidated period column names → arbitrary code as the definer **[reproduced: 18]** — FIXED (`93d9c92`, via `%L`-wrapped bodies)
 
 `add_system_time_period` accepts arbitrary start/end **column names** without validation (unlike the period *name*,
 which is regex-checked at [line 298](periods--1.2.sql#L298)). `add_system_versioning`
@@ -216,7 +246,7 @@ executed by the `SECURITY DEFINER` (superuser) owner. Verified end-to-end: an un
 use dollar-quoting with a parameter or `format('%L', ...)` for the literal context; `%I` alone is not sufficient
 inside a string literal.
 
-### 3.2 `SECURITY DEFINER` functions have no `SET search_path` → function/operator hijack **[reproduced: 18]**
+### 3.2 `SECURITY DEFINER` functions have no `SET search_path` → function/operator hijack **[reproduced: 18]** — NOT FIXED (blanket pin regresses user-defined types; needs full qualification or privilege separation — see Status)
 
 None of the 19 `SECURITY DEFINER` functions pin `search_path`, and they call many unqualified functions/operators
 (`lower()` at [297](periods--1.2.sql#L297), `format`, `left`, `octet_length`, `string_agg`, `||`, casts, …). A caller
@@ -226,7 +256,7 @@ it executed as the superuser owner (the classic CVE-2018-1058 shape). Verified l
 **Fix:** add `SET search_path = pg_catalog, pg_temp` (or `= ''` with fully-qualified references) to every
 `SECURITY DEFINER` function.
 
-### 3.3 DDL functions are `PUBLIC`-executable with no ownership check **[reproduced: 18]**
+### 3.3 DDL functions are `PUBLIC`-executable with no ownership check **[reproduced: 18]** — NOT FIXED (review's `current_user` predicate is wrong inside SECURITY DEFINER; correct fix is a multi-part authorization redesign — see Status)
 
 `add_period`, `add_system_time_period`, `add_system_versioning` (and siblings) never verify the caller owns
 `table_name`, and `EXECUTE` is never revoked from `PUBLIC`. A low-privileged user can therefore add
@@ -235,6 +265,15 @@ delivery vector that makes §3.1/§3.2 reachable.
 
 **Fix:** add an explicit ownership guard at the top of each mutating function (e.g. `pg_has_role(current_user,
 relowner, 'USAGE')`) and/or `REVOKE EXECUTE ... FROM PUBLIC`.
+
+> **Correction (third pass):** `current_user` is the *wrong* identity here — inside a `SECURITY DEFINER`
+> function it is the superuser definer, so `pg_has_role(current_user, relowner, 'USAGE')` is always true
+> and never rejects (verified on PG 18). Use `session_user` (unmasked by SECURITY DEFINER). A complete
+> fix also has to handle: the identity policy (`session_user` ignores `SET ROLE`), the internal
+> `drop_unique_key → drop_foreign_key(NULL, key)` cascade (split a PUBLIC entry from a REVOKE'd worker),
+> the unreachable/bulk NULL-table paths, the existing-history-table takeover in `add_system_versioning`,
+> REFERENCES enforcement on the parent in `add_foreign_key`, schema `CREATE` checks, and TOCTOU locking
+> around the ownership check. It is a multi-part redesign, deferred — see the Status section at the top.
 
 ---
 
