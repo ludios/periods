@@ -119,7 +119,7 @@ SELECT id, val, note, s, e FROM fp_nullable ORDER BY s, e, id;
  id | val | note | s  | e  
 ----+-----+------+----+----
   2 | 100 |      | 10 | 20
-  1 | 100 |      | 10 | 40
+  1 | 999 |      | 20 | 30
   3 | 100 |      | 30 | 40
 (3 rows)
 
