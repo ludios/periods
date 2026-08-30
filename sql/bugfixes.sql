@@ -657,3 +657,55 @@ SELECT periods.drop_system_time_period('h2', purge => true);
 SELECT periods.add_period('h2', 'system_time', 'sts', 'ste', range_type => 'tstzrange');
 SELECT periods.drop_system_time_period('h2', purge => true);
 DROP TABLE h2;
+
+/*
+ * sol.md T5/T6/§9: add_foreign_key() validated its parameters too late or
+ * not at all.  MATCH PARTIAL was accepted at DDL time and exploded only when
+ * a partially-NULL key reached the deferred trigger; CASCADE/SET NULL/
+ * SET DEFAULT actions and NULL parameters surfaced as raw catalog
+ * constraint violations after the triggers were already created; and a
+ * referencing/referenced column-count mismatch (including multidimensional
+ * and empty arrays) died with 'null values cannot be formatted as an SQL
+ * identifier' from the NULL-padded correlation builder.
+ */
+
+CREATE TABLE fkb_uk (uid integer, uid2 integer, vf integer, vt integer);
+SELECT periods.add_period('fkb_uk', 'validity', 'vf', 'vt');
+SELECT periods.add_unique_key('fkb_uk', '{uid,uid2}', 'validity', key_name => 'fkb_uk2');
+SELECT periods.add_unique_key('fkb_uk', '{uid}', 'validity', key_name => 'fkb_uk1');
+CREATE TABLE fkb_fk (uid integer, uid2 integer, vf integer, vt integer);
+SELECT periods.add_period('fkb_fk', 'validity', 'vf', 'vt');
+
+/* MATCH PARTIAL: unimplemented, must not be accepted at DDL time */
+SELECT periods.add_foreign_key('fkb_fk', '{uid,uid2}', 'validity', 'fkb_uk2', match_type => 'PARTIAL', key_name => 'fkb_partial');
+INSERT INTO fkb_uk VALUES (1, 1, 0, 100);
+INSERT INTO fkb_fk VALUES (1, NULL, 10, 20);
+DELETE FROM fkb_fk;
+SELECT periods.drop_foreign_key('fkb_fk', 'fkb_partial');
+
+/* Unsupported referential actions must be rejected up front */
+SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', delete_action => 'CASCADE');
+SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => 'SET NULL');
+
+/* Column-count mismatches in both directions, multidimensional, and empty.
+ * (terse: the verbose CONTEXT here is version-dependent wording) */
+\set VERBOSITY terse
+SELECT periods.add_foreign_key('fkb_fk', '{uid,uid2}', 'validity', 'fkb_uk1');
+SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk2');
+SELECT periods.add_foreign_key('fkb_fk', '{{uid,uid2}}', 'validity', 'fkb_uk1');
+SELECT periods.add_foreign_key('fkb_fk', '{}', 'validity', 'fkb_uk1');
+\set VERBOSITY default
+
+/* Explicit NULL parameters must not reach the catalog inserts */
+SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', match_type => NULL);
+SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => NULL);
+
+/* The supported shape keeps working and enforcing */
+SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => 'RESTRICT', delete_action => 'RESTRICT', key_name => 'fkb_ok');
+INSERT INTO fkb_fk VALUES (1, NULL, 10, 20);
+INSERT INTO fkb_fk VALUES (99, NULL, 10, 20);
+DELETE FROM fkb_fk;
+SELECT periods.drop_foreign_key('fkb_fk', 'fkb_ok');
+
+DROP TABLE fkb_fk;
+DROP TABLE fkb_uk;
