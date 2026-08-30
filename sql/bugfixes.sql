@@ -1,5 +1,6 @@
 -- Model-output: Claude Fable 5
 -- Model-output: Claude Opus 4.8
+-- Model-output: Claude Opus 5
 /*
  * Regression tests for bugs found in the 2026-08 code review
  * (ai-code-reviews/claude.md).  Section markers below refer to that
@@ -782,3 +783,85 @@ SELECT periods.drop_for_portion_view('fp_jb', 'p');
 SELECT periods.drop_period('fp_jb', 'p');
 DROP TABLE fp_jb;
 DROP TYPE bugfix_jsonbrange;
+/*
+ * §3.2 (prerequisite): periods.periods.range_type is a regtype, and a regtype's
+ * text form is already a correctly quoted — and, when the type is not visible on
+ * the search_path, schema-qualified — identifier.  Wrapping it in %I quotes the
+ * whole thing a second time, so a range type whose rendered name is not a bare
+ * lowercase identifier breaks both the EXCLUDE constraint that add_unique_key
+ * builds and the one rename_following re-derives after a rename.
+ */
+
+CREATE TYPE "MyRange" AS RANGE (SUBTYPE = integer);
+
+/* add_unique_key building the constraint itself */
+CREATE TABLE qr_make (id integer, s integer, e integer);
+SELECT periods.add_period('qr_make', 'p', 's', 'e', '"MyRange"');
+SELECT periods.add_unique_key('qr_make', ARRAY['id'], 'p', 'qr_make_k');
+
+/* add_unique_key matching a constraint that already exists */
+CREATE TABLE qr_match (id integer, s integer, e integer);
+SELECT periods.add_period('qr_match', 'p', 's', 'e', '"MyRange"');
+ALTER TABLE qr_match
+    ADD CONSTRAINT qr_match_u UNIQUE (id, s, e),
+    ADD CONSTRAINT qr_match_x EXCLUDE USING gist (id WITH =, "MyRange"(s, e, '[)') WITH &&);
+SELECT periods.add_unique_key('qr_match', ARRAY['id'], 'p', 'qr_match_k', 'qr_match_u', 'qr_match_x');
+
+/* rename_following re-derives the constraint text when it is renamed away */
+ALTER TABLE qr_match RENAME CONSTRAINT qr_match_x TO qr_match_x2;
+SELECT exclude_constraint FROM periods.unique_keys WHERE key_name = 'qr_match_k';
+
+DROP TABLE qr_match;
+DROP TABLE qr_make;
+DROP TYPE "MyRange";
+
+/*
+ * §3.2: a SECURITY DEFINER function must not resolve unqualified names through
+ * the caller's search_path.  add_period() runs lower(period_name) on a `name`
+ * value, so an exact-signature lower(name) in any schema the caller can write to
+ * beats pg_catalog.lower(text) — PostgreSQL prefers an exact argument-type match
+ * over a coercion regardless of where pg_catalog sits in the path — and it then
+ * runs with the definer's privileges.
+ */
+
+RESET ROLE;
+CREATE SCHEMA b32_evil AUTHORIZATION periods_unprivileged_user;
+CREATE TEMP TABLE b32_marker (ran_as_definer boolean);
+GRANT INSERT, SELECT ON pg_temp.b32_marker TO periods_unprivileged_user;
+SET ROLE TO periods_unprivileged_user;
+
+CREATE FUNCTION b32_evil.lower(name) RETURNS name LANGUAGE sql VOLATILE AS
+$$
+    INSERT INTO pg_temp.b32_marker VALUES (current_user <> 'periods_unprivileged_user');
+    SELECT pg_catalog.lower($1)::name;
+$$;
+
+CREATE TABLE b32 (id integer, s date, e date);
+SET search_path TO b32_evil, public;
+SELECT periods.add_period('public.b32', 'p', 's', 'e');
+RESET search_path;
+
+SELECT count(*) AS hijack_calls,
+       coalesce(bool_or(ran_as_definer), false) AS ran_as_definer
+FROM pg_temp.b32_marker;
+
+DROP TABLE b32;
+DROP FUNCTION b32_evil.lower(name);
+RESET ROLE;
+DROP SCHEMA b32_evil;
+DROP TABLE b32_marker;
+SET ROLE TO periods_unprivileged_user;
+
+/* Every SECURITY DEFINER function in the extension must pin its search_path. */
+SELECT count(*) AS security_definer_functions
+FROM pg_catalog.pg_proc AS p
+JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+WHERE n.nspname = 'periods' AND p.prosecdef;
+
+SELECT p.proname AS security_definer_without_pinned_search_path
+FROM pg_catalog.pg_proc AS p
+JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+WHERE n.nspname = 'periods'
+  AND p.prosecdef
+  AND NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, pg_temp']
+ORDER BY p.proname;
