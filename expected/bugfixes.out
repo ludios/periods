@@ -697,15 +697,13 @@ SELECT periods.add_for_portion_view('fp_tpk', 'p');
 
 INSERT INTO fp_tpk VALUES (1, 'a', 10, 40);
 UPDATE fp_tpk__for_portion_of_p SET val = 'b', s = 20, e = 30;
-ERROR:  null value in column "id" of relation "fp_tpk" violates not-null constraint
-DETAIL:  Failing row contains (null, a, null, null).
-CONTEXT:  SQL statement "INSERT INTO fp_tpk (val) VALUES ('a')"
-PL/pgSQL function periods.update_portion_of() line 207 at EXECUTE
 SELECT id, val, s, e FROM fp_tpk ORDER BY s;
  id | val | s  | e  
 ----+-----+----+----
-  1 | a   | 10 | 40
-(1 row)
+  1 | a   | 10 | 20
+  1 | b   | 20 | 30
+  1 | a   | 30 | 40
+(3 rows)
 
 SELECT periods.drop_period('fp_tpk', 'p');
  drop_period 
@@ -731,10 +729,10 @@ SELECT periods.add_for_portion_view('fp_spk', 'p');
 
 INSERT INTO fp_spk VALUES (1, 'a', 10, 40);
 UPDATE fp_spk__for_portion_of_p SET val = 'b', s = 20, e = 30;
-ERROR:  null value in column "id" of relation "fp_spk" violates not-null constraint
-DETAIL:  Failing row contains (null, a, 10, 20).
-CONTEXT:  SQL statement "INSERT INTO fp_spk (e, s, val) VALUES ('20', '10', 'a')"
-PL/pgSQL function periods.update_portion_of() line 207 at EXECUTE
+ERROR:  duplicate key value violates unique constraint "fp_spk_pkey"
+DETAIL:  Key (id)=(1) already exists.
+CONTEXT:  SQL statement "INSERT INTO fp_spk (e, id, s, val) VALUES ('20', '1', '10', 'a')"
+PL/pgSQL function periods.update_portion_of() line 224 at EXECUTE
 SELECT id, val, s, e FROM fp_spk ORDER BY s;
  id | val | s  | e  
 ----+-----+----+----
@@ -768,11 +766,11 @@ SELECT periods.add_for_portion_view('fp_dpk', 'p');
 INSERT INTO fp_dpk (val, s, e) VALUES ('a', 10, 40);
 UPDATE fp_dpk__for_portion_of_p SET val = 'b', s = 20, e = 30;
 SELECT id, val, s, e FROM fp_dpk ORDER BY s, e, id;
- id | val | s  |  e  
-----+-----+----+-----
-  2 | a   |  0 | 100
-  3 | a   |  0 | 100
-  1 | b   | 20 |  30
+ id | val | s  | e  
+----+-----+----+----
+  2 | a   | 10 | 20
+  1 | b   | 20 | 30
+  3 | a   | 30 | 40
 (3 rows)
 
 SELECT periods.drop_period('fp_dpk', 'p');
@@ -845,7 +843,7 @@ LINE 1: ...INTO fp_arr (e, s, tags, val) VALUES ('20', '10', '[1, 2, 3]...
                                                              ^
 DETAIL:  Missing "]" after array dimensions.
 QUERY:  INSERT INTO fp_arr (e, s, tags, val) VALUES ('20', '10', '[1, 2, 3]', '100')
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 207 at EXECUTE
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 224 at EXECUTE
 SELECT id, val, tags, s, e FROM fp_arr ORDER BY s;
  id | val |  tags   | s  | e  
 ----+-----+---------+----+----
@@ -859,7 +857,7 @@ LINE 1: ...INTO fp_arr (e, s, tags, val) VALUES ('20', '10', '[1, 2, 3]...
                                                              ^
 DETAIL:  Missing "]" after array dimensions.
 QUERY:  INSERT INTO fp_arr (e, s, tags, val) VALUES ('20', '10', '[1, 2, 3]', '100')
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 207 at EXECUTE
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 224 at EXECUTE
 SELECT id, val, tags, s, e FROM fp_arr ORDER BY s;
  id | val |  tags   | s  | e  
 ----+-----+---------+----+----
@@ -894,7 +892,7 @@ LINE 1: ...SERT INTO fp_comp (e, pair, s, val) VALUES ('20', '{"x": 7, ...
                                                              ^
 DETAIL:  Missing left parenthesis.
 QUERY:  INSERT INTO fp_comp (e, pair, s, val) VALUES ('20', '{"x": 7, "y": "seven"}', '10', '100')
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 207 at EXECUTE
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 224 at EXECUTE
 SELECT id, val, pair, s, e FROM fp_comp ORDER BY s;
  id | val |   pair    | s  | e  
 ----+-----+-----------+----+----
@@ -932,7 +930,7 @@ LINE 1: ... INTO fp_lb (e, s, tags, val) VALUES ('20', '10', '[1, 2, 3]...
                                                              ^
 DETAIL:  Missing "]" after array dimensions.
 QUERY:  INSERT INTO fp_lb (e, s, tags, val) VALUES ('20', '10', '[1, 2, 3]', '100')
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 207 at EXECUTE
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 224 at EXECUTE
 SELECT id, val, tags, array_dims(tags) AS dims, s, e FROM fp_lb ORDER BY s;
  id | val |     tags      | dims  | s  | e  
 ----+-----+---------------+-------+----+----

@@ -205,11 +205,15 @@ DECLARE
         'WHERE a.attrelid = $1 '
         '  AND a.attnum > 0 '
         '  AND NOT a.attisdropped '
+        '  AND a.attname NOT IN ($2, $3) '
         '  AND (pg_catalog.pg_get_serial_sequence(a.attrelid::regclass::text, a.attname) IS NOT NULL '
-        '    OR EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
-        '               WHERE _c.conrelid = a.attrelid '
-        '                 AND _c.contype = ''p'' '
-        '                 AND _c.conkey @> ARRAY[a.attnum]) '
+        '    OR (EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
+        '                WHERE _c.conrelid = a.attrelid '
+        '                  AND _c.contype = ''p'' '
+        '                  AND _c.conkey @> ARRAY[a.attnum]) '
+        '        AND (a.atthasdef OR EXISTS (SELECT FROM pg_catalog.pg_type AS _t '
+        '                                    WHERE _t.oid = a.atttypid '
+        '                                      AND _t.typdefault IS NOT NULL))) '
         '    OR EXISTS (SELECT FROM periods.periods AS _p '
         '               WHERE (_p.table_name, _p.period_name) = (a.attrelid, ''system_time'') '
         '                 AND a.attname IN (_p.start_column_name, _p.end_column_name)))';
@@ -220,12 +224,16 @@ DECLARE
         'WHERE a.attrelid = $1 '
         '  AND a.attnum > 0 '
         '  AND NOT a.attisdropped '
+        '  AND a.attname NOT IN ($2, $3) '
         '  AND (pg_catalog.pg_get_serial_sequence(a.attrelid::regclass::text, a.attname) IS NOT NULL '
         '    OR a.attidentity <> '''' '
-        '    OR EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
-        '               WHERE _c.conrelid = a.attrelid '
-        '                 AND _c.contype = ''p'' '
-        '                 AND _c.conkey @> ARRAY[a.attnum]) '
+        '    OR (EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
+        '                WHERE _c.conrelid = a.attrelid '
+        '                  AND _c.contype = ''p'' '
+        '                  AND _c.conkey @> ARRAY[a.attnum]) '
+        '        AND (a.atthasdef OR EXISTS (SELECT FROM pg_catalog.pg_type AS _t '
+        '                                    WHERE _t.oid = a.atttypid '
+        '                                      AND _t.typdefault IS NOT NULL))) '
         '    OR EXISTS (SELECT FROM periods.periods AS _p '
         '               WHERE (_p.table_name, _p.period_name) = (a.attrelid, ''system_time'') '
         '                 AND a.attname IN (_p.start_column_name, _p.end_column_name)))';
@@ -236,13 +244,17 @@ DECLARE
         'WHERE a.attrelid = $1 '
         '  AND a.attnum > 0 '
         '  AND NOT a.attisdropped '
+        '  AND a.attname NOT IN ($2, $3) '
         '  AND (pg_catalog.pg_get_serial_sequence(a.attrelid::regclass::text, a.attname) IS NOT NULL '
         '    OR a.attidentity <> '''' '
         '    OR a.attgenerated <> '''' '
-        '    OR EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
-        '               WHERE _c.conrelid = a.attrelid '
-        '                 AND _c.contype = ''p'' '
-        '                 AND _c.conkey @> ARRAY[a.attnum]) '
+        '    OR (EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
+        '                WHERE _c.conrelid = a.attrelid '
+        '                  AND _c.contype = ''p'' '
+        '                  AND _c.conkey @> ARRAY[a.attnum]) '
+        '        AND (a.atthasdef OR EXISTS (SELECT FROM pg_catalog.pg_type AS _t '
+        '                                    WHERE _t.oid = a.atttypid '
+        '                                      AND _t.typdefault IS NOT NULL))) '
         '    OR EXISTS (SELECT FROM periods.periods AS _p '
         '               WHERE (_p.table_name, _p.period_name) = (a.attrelid, ''system_time'') '
         '                 AND a.attname IN (_p.start_column_name, _p.end_column_name)))';
@@ -319,7 +331,12 @@ BEGIN
          * Columns belonging to a SYSTEM_TIME period are also removed.
          *
          * In addition to what the standard calls for, we also remove any
-         * columns belonging to primary keys.
+         * columns belonging to primary keys — but only if a column or domain
+         * DEFAULT can regenerate them.  One without any default (say the id
+         * of a temporal PRIMARY KEY (id, start, end)) cannot regenerate, so
+         * the slices must keep its value.  And the period's own bound columns
+         * are never removed: the slices carry freshly computed bounds, which
+         * no DEFAULT could know.
          */
         IF SERVER_VERSION < 100000 THEN
             generated_columns_sql := GENERATED_COLUMNS_SQL_PRE_10;
@@ -331,7 +348,7 @@ BEGIN
 
         EXECUTE generated_columns_sql
         INTO generated_columns
-        USING info.table_name;
+        USING info.table_name, info.start_column_name, info.end_column_name;
 
         /* There may not be any generated columns. */
         IF generated_columns IS NOT NULL THEN
