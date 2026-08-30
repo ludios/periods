@@ -454,3 +454,28 @@ INSERT INTO b31_ok (id, val) VALUES (1, 'a');
 SELECT val FROM b31_ok__as_of(transaction_timestamp()) ORDER BY val;
 SELECT periods.drop_system_versioning('b31_ok', drop_behavior => 'CASCADE', purge => true);
 DROP TABLE b31_ok;
+
+/*
+ * sol.md T3: add_system_time_period() checked the requested start/end column
+ * names against the unique keys of EVERY table, so a temporal unique key on an
+ * unrelated table whose scalar columns share a name blocked adding SYSTEM_TIME.
+ */
+
+CREATE TABLE t3_other (sys_s integer, vf integer, vt integer);
+SELECT periods.add_period('t3_other', 'validity', 'vf', 'vt');
+SELECT periods.add_unique_key('t3_other', '{sys_s}', 'validity', key_name => 't3_other_uk');
+
+CREATE TABLE t3_victim (id integer PRIMARY KEY);
+SELECT periods.add_system_time_period('t3_victim', 'sys_s', 'sys_e');
+
+/* A collision on the table itself must still be rejected */
+CREATE TABLE t3_self (sys_s timestamptz, vf integer, vt integer);
+SELECT periods.add_period('t3_self', 'validity', 'vf', 'vt');
+SELECT periods.add_unique_key('t3_self', '{sys_s}', 'validity', key_name => 't3_self_uk');
+SELECT periods.add_system_time_period('t3_self', 'sys_s', 'sys_e');
+
+SELECT periods.drop_unique_key('t3_self', 't3_self_uk');
+SELECT periods.drop_unique_key('t3_other', 't3_other_uk');
+DROP TABLE t3_self;
+DROP TABLE t3_victim;
+DROP TABLE t3_other;

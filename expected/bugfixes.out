@@ -1014,3 +1014,57 @@ SELECT periods.drop_system_versioning('b31_ok', drop_behavior => 'CASCADE', purg
 (1 row)
 
 DROP TABLE b31_ok;
+/*
+ * sol.md T3: add_system_time_period() checked the requested start/end column
+ * names against the unique keys of EVERY table, so a temporal unique key on an
+ * unrelated table whose scalar columns share a name blocked adding SYSTEM_TIME.
+ */
+CREATE TABLE t3_other (sys_s integer, vf integer, vt integer);
+SELECT periods.add_period('t3_other', 'validity', 'vf', 'vt');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('t3_other', '{sys_s}', 'validity', key_name => 't3_other_uk');
+ add_unique_key 
+----------------
+ t3_other_uk
+(1 row)
+
+CREATE TABLE t3_victim (id integer PRIMARY KEY);
+SELECT periods.add_system_time_period('t3_victim', 'sys_s', 'sys_e');
+ERROR:  columns in period for SYSTEM_TIME are not allowed in UNIQUE keys
+CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 48 at RAISE
+/* A collision on the table itself must still be rejected */
+CREATE TABLE t3_self (sys_s timestamptz, vf integer, vt integer);
+SELECT periods.add_period('t3_self', 'validity', 'vf', 'vt');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('t3_self', '{sys_s}', 'validity', key_name => 't3_self_uk');
+ add_unique_key 
+----------------
+ t3_self_uk
+(1 row)
+
+SELECT periods.add_system_time_period('t3_self', 'sys_s', 'sys_e');
+ERROR:  columns in period for SYSTEM_TIME are not allowed in UNIQUE keys
+CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 48 at RAISE
+SELECT periods.drop_unique_key('t3_self', 't3_self_uk');
+ drop_unique_key 
+-----------------
+ 
+(1 row)
+
+SELECT periods.drop_unique_key('t3_other', 't3_other_uk');
+ drop_unique_key 
+-----------------
+ 
+(1 row)
+
+DROP TABLE t3_self;
+DROP TABLE t3_victim;
+DROP TABLE t3_other;
