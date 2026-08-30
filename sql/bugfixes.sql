@@ -479,3 +479,64 @@ SELECT periods.drop_unique_key('t3_other', 't3_other_uk');
 DROP TABLE t3_self;
 DROP TABLE t3_victim;
 DROP TABLE t3_other;
+
+/*
+ * sol.md T2: excluded_column_names accepted the SYSTEM_TIME period's own
+ * start/end columns.  Excluding a bound column disables both the
+ * GENERATED ALWAYS enforcement and the history write for updates touching
+ * only that column, so the row-start timestamp became forgeable without
+ * leaving any history.
+ */
+
+CREATE TABLE t2_excl (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('t2_excl', excluded_column_names => '{system_time_start}');
+SELECT periods.add_system_time_period('t2_excl');
+SELECT periods.add_system_versioning('t2_excl');
+
+INSERT INTO t2_excl (id, val) VALUES (1, 'a');
+UPDATE t2_excl SET system_time_start = 'epoch';
+SELECT id, val, system_time_start = 'epoch' AS forged FROM t2_excl;
+SELECT count(*) AS history_rows FROM t2_excl_history;
+
+SELECT periods.set_system_time_period_excluded_columns('t2_excl', '{system_time_end}');
+/* Excluding an ordinary column must keep working */
+SELECT periods.set_system_time_period_excluded_columns('t2_excl', '{val}');
+SELECT stp.excluded_column_names
+FROM periods.system_time_periods AS stp
+WHERE stp.table_name = 't2_excl'::regclass;
+SELECT periods.drop_system_versioning('t2_excl', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE t2_excl;
+
+/* Custom bound column names must be looked up, not assumed */
+CREATE TABLE t2_names (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('t2_names', 'my_start', 'my_end');
+SELECT periods.set_system_time_period_excluded_columns('t2_names', '{my_end}');
+SELECT stp.excluded_column_names
+FROM periods.system_time_periods AS stp
+WHERE stp.table_name = 't2_names'::regclass;
+DROP TABLE t2_names;
+
+/* A table without a SYSTEM_TIME period: the setter stays a silent no-op */
+CREATE TABLE t2_nop (id integer, val text);
+SELECT periods.set_system_time_period_excluded_columns('t2_nop', '{val}');
+DROP TABLE t2_nop;
+
+/*
+ * Defense in depth: a bound column that reached the catalog through an old
+ * version (or a dump/restore of one) must be ignored by the C triggers, not
+ * honored.  Poison the catalog directly as superuser to simulate that.
+ */
+CREATE TABLE t2_legacy (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('t2_legacy');
+SELECT periods.add_system_versioning('t2_legacy');
+INSERT INTO t2_legacy (id, val) VALUES (1, 'a');
+RESET ROLE;
+UPDATE periods.system_time_periods
+SET excluded_column_names = '{system_time_start}'
+WHERE table_name = 't2_legacy'::regclass;
+SET ROLE TO periods_unprivileged_user;
+UPDATE t2_legacy SET system_time_start = 'epoch';
+SELECT id, val, system_time_start = 'epoch' AS forged FROM t2_legacy;
+SELECT count(*) AS history_rows FROM t2_legacy_history;
+SELECT periods.drop_system_versioning('t2_legacy', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE t2_legacy;
