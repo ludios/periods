@@ -75,7 +75,15 @@ Automatically commit your changes with this commit template:
 
 	</slop>
 
-"(mid-turn)" if I added something mid-turn; multiple <prompt></prompt> <slop></slop> ... if the conversation had several real turns.
+"(mid-turn)" if I added something mid-turn; multiple &lt;prompt>&lt;/prompt> &lt;slop>&lt;/slop> ... if the conversation had several real turns.
+
+If acting on a code review from Codex or some other agent, inside the beginning of &lt;slop>, add:
+
+	<review model="model e.g. gpt-5.6-sol" reasoning_effort="effort e.g. xhigh">
+
+	...
+
+	</review>
 
 # Codex code review after each commit
 
