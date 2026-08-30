@@ -1230,26 +1230,35 @@ SELECT periods.add_system_time_period('b14');
 (1 row)
 
 SELECT periods.add_system_versioning('b14');
-ERROR:  role ""Bug14 Owner"" does not exist
-CONTEXT:  SQL statement "ALTER TABLE public.b14_history OWNER TO """Bug14 Owner""""
-PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 147 at EXECUTE
+NOTICE:  history table "b14_history" created for "b14", be sure to index it properly
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
 /* The history objects must all belong to the table's owner */
 SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
 FROM pg_catalog.pg_class AS c
 WHERE c.relname IN ('b14', 'b14_history', 'b14_with_history')
 ORDER BY c.relname;
- relname |    owner    
----------+-------------
- b14     | Bug14 Owner
-(1 row)
+     relname      |    owner    
+------------------+-------------
+ b14              | Bug14 Owner
+ b14_history      | Bug14 Owner
+ b14_with_history | Bug14 Owner
+(3 rows)
 
 SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
 FROM pg_catalog.pg_proc AS p
 WHERE p.proname LIKE 'b14\_\_%'
 ORDER BY p.proname;
- proname | owner 
----------+-------
-(0 rows)
+        proname         |    owner    
+------------------------+-------------
+ b14__as_of             | Bug14 Owner
+ b14__between           | Bug14 Owner
+ b14__between_symmetric | Bug14 Owner
+ b14__from_to           | Bug14 Owner
+(4 rows)
 
 /* health_checks' ownership realignment must handle quoted names, too,
  * including the FOR PORTION OF view */
@@ -1266,26 +1275,29 @@ SELECT periods.add_for_portion_view('b14', 'validity');
 (1 row)
 
 ALTER TABLE b14 OWNER TO "Bug14 Successor";
-ERROR:  role ""Bug14 Successor"" does not exist
-CONTEXT:  SQL statement "ALTER VIEW b14__for_portion_of_validity OWNER TO """Bug14 Successor""""
-PL/pgSQL function periods.health_checks() line 76 at EXECUTE
 SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
 FROM pg_catalog.pg_class AS c
 WHERE c.relname IN ('b14', 'b14_history', 'b14_with_history', 'b14__for_portion_of_validity')
 ORDER BY c.relname;
-           relname            |    owner    
-------------------------------+-------------
- b14                          | Bug14 Owner
- b14__for_portion_of_validity | Bug14 Owner
-(2 rows)
+           relname            |      owner      
+------------------------------+-----------------
+ b14                          | Bug14 Successor
+ b14__for_portion_of_validity | Bug14 Successor
+ b14_history                  | Bug14 Successor
+ b14_with_history             | Bug14 Successor
+(4 rows)
 
 SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
 FROM pg_catalog.pg_proc AS p
 WHERE p.proname LIKE 'b14\_\_%'
 ORDER BY p.proname;
- proname | owner 
----------+-------
-(0 rows)
+        proname         |      owner      
+------------------------+-----------------
+ b14__as_of             | Bug14 Successor
+ b14__between           | Bug14 Successor
+ b14__between_symmetric | Bug14 Successor
+ b14__from_to           | Bug14 Successor
+(4 rows)
 
 SELECT periods.drop_for_portion_view('b14', 'validity');
  drop_for_portion_view 
@@ -1295,29 +1307,31 @@ SELECT periods.drop_for_portion_view('b14', 'validity');
 
 /* Reconnecting a retained history table goes through the adoption branch */
 SELECT periods.drop_system_versioning('b14', drop_behavior => 'CASCADE');
-NOTICE:  table b14 does not have SYSTEM VERSIONING
  drop_system_versioning 
 ------------------------
- f
+ t
 (1 row)
 
 SELECT periods.add_system_versioning('b14');
-ERROR:  role ""Bug14 Owner"" does not exist
-CONTEXT:  SQL statement "ALTER TABLE public.b14_history OWNER TO """Bug14 Owner""""
-PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 147 at EXECUTE
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
 SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
 FROM pg_catalog.pg_class AS c
 WHERE c.relname IN ('b14_history', 'b14_with_history')
 ORDER BY c.relname;
- relname | owner 
----------+-------
-(0 rows)
+     relname      |      owner      
+------------------+-----------------
+ b14_history      | Bug14 Successor
+ b14_with_history | Bug14 Successor
+(2 rows)
 
 SELECT periods.drop_system_versioning('b14', drop_behavior => 'CASCADE', purge => true);
-NOTICE:  table b14 does not have SYSTEM VERSIONING
  drop_system_versioning 
 ------------------------
- f
+ t
 (1 row)
 
 DROP TABLE b14;
