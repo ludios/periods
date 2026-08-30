@@ -1140,3 +1140,22 @@ SET client_min_messages TO warning;
 DROP SCHEMA b33ops CASCADE;
 RESET client_min_messages;
 SET ROLE TO periods_unprivileged_user;
+
+/* Rebase-review follow-up: the bounds check must use the range's own ordering
+ * operator (btree strategy 1 of its subtype opclass), whatever its name, not
+ * fall back to a bare '<' that may be invisible under the pinned search_path
+ * or order differently than the range does. */
+CREATE TYPE bugfix_patternrange AS RANGE (subtype = text, subtype_opclass = text_pattern_ops);
+CREATE TABLE bc_pat (id integer, s text, e text);
+SELECT periods.add_period('bc_pat', 'p', 's', 'e', range_type => 'bugfix_patternrange');
+SELECT pg_catalog.pg_get_constraintdef(c.oid) AS bounds_def
+FROM periods.periods AS p
+JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (p.table_name, p.bounds_check_constraint)
+WHERE p.table_name = 'bc_pat'::regclass;
+/* rename_following() must rebuild the same text: renaming the constraint has
+ * to be picked up, which only happens when the two derivations agree. */
+ALTER TABLE bc_pat RENAME CONSTRAINT bc_pat_p_check TO bc_pat_p_check2;
+SELECT p.bounds_check_constraint FROM periods.periods AS p WHERE p.table_name = 'bc_pat'::regclass;
+SELECT periods.drop_period('bc_pat', 'p');
+DROP TABLE bc_pat;
+DROP TYPE bugfix_patternrange;
