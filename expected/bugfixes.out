@@ -659,14 +659,11 @@ SELECT count(*) AS history_rows_before
 (1 row)
 
 TRUNCATE trunc_sv;
-ERROR:  relation "history_schema_with_quite_a_long_name_indeed.history_table_with" does not exist
-CONTEXT:  SQL statement "TRUNCATE history_schema_with_quite_a_long_name_indeed.history_table_with"
-PL/pgSQL function periods.truncate_system_versioning() line 12 at EXECUTE
 SELECT count(*) AS history_rows_after
     FROM history_schema_with_quite_a_long_name_indeed.history_table_with_quite_a_long_name_as_well;
  history_rows_after 
 --------------------
-                  1
+                  0
 (1 row)
 
 SELECT periods.drop_system_versioning('trunc_sv', drop_behavior => 'CASCADE', purge => true);

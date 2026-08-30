@@ -1383,3 +1383,32 @@ BEGIN
     END LOOP;
 END;
 $function$;
+
+/*
+ * truncate_system_versioning() read the history table's regclass into a
+ * name-typed variable, truncating the qualified form at 63 bytes; TRUNCATE
+ * then failed (or could hit an unrelated relation of the truncated name).
+ */
+CREATE OR REPLACE FUNCTION periods.truncate_system_versioning()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ STRICT
+ SECURITY DEFINER
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    history_table_name regclass;
+BEGIN
+    SELECT sv.history_table_name
+    INTO history_table_name
+    FROM periods.system_versioning AS sv
+    WHERE sv.table_name = TG_RELID;
+
+    IF FOUND THEN
+        EXECUTE format('TRUNCATE %s', history_table_name);
+    END IF;
+
+    RETURN NULL;
+END;
+$function$;
