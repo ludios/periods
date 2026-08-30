@@ -25,9 +25,14 @@ PostgreSQL 17.11 and 18.6.
   versioning always failed on a double-dropped constraint (fixed, `6d4ffa8`); plpgsql
   `BEGIN/EXCEPTION` cannot be used in the FK triggers (they run as deferred triggers during
   COMMIT, where subtransactions crash cassert builds — discovered by the new tests).
-- **Not yet fixed:** §2.3(a) and §2.3(c) — plans are written and codex-review-ready
-  (`plan_23ac.md` in the session scratchpad); implementation deliberately held because the codex
-  workspace ran out of credits mid-session and the plan-review gate could not run.
+- **Fixed (second pass, after codex credits returned):** §2.3(a) (`894135b`, `55cf391` — PK columns
+  are stripped from slices only when a column or domain DEFAULT regenerates them, and period bound
+  columns never are) and §2.3(c) (`8df93f6`, `c6fdf71` — slice INSERTs and the central UPDATE go
+  through `jsonb_populate_record`, the latter over changed columns only; array lower bounds are
+  documented as not preserved).  Every commit batch has a completed codex review.
+- **Support change (user decision):** PostgreSQL 9.5/9.6 dropped (`cebff70`) instead of shipping a
+  generated full 1.2.4 install script; fresh installs use the PG10+ chained-script capability.
+  This also mooted the request for a fabricated pre-10 `bugfixes` expected-output variant.
 - **Deliberately left as design decisions:** §5.3 (TRUNCATE-wipes-history is by design; document loudly
   or block — upstream's call), §6.2 (ADD COLUMN vs history divergence), §6.3 (PG18 leftover named
   NOT NULL constraints on purge; benign).
