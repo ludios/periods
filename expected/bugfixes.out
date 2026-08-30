@@ -383,20 +383,20 @@ SELECT periods.add_foreign_key('sn_child', ARRAY['id'], 'p', 'sn_parent_id_p', k
 INSERT INTO sn_parent VALUES (1, 0, 20);
 /* A child with a key that has no parent at all must be rejected. */
 INSERT INTO sn_child VALUES (999, 5, 10);
+ERROR:  insert or update on table "sn_child" violates foreign key constraint "sn_child_id_p"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 130 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
+PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 /* A properly covered child is accepted. */
 INSERT INTO sn_child VALUES (1, 5, 10);
 INSERT INTO sn_parent VALUES (2, 10, 50);
 /* Overlapping periods of *other* keys must not confuse the check. */
 INSERT INTO sn_child VALUES (1, 12, 18);
-ERROR:  insert or update on table "sn_child" violates foreign key constraint "sn_child_id_p"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 130 at RAISE
-SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
-PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 SELECT id, s, e FROM sn_child ORDER BY id, s;
- id  | s | e  
------+---+----
-   1 | 5 | 10
- 999 | 5 | 10
+ id | s  | e  
+----+----+----
+  1 |  5 | 10
+  1 | 12 | 18
 (2 rows)
 
 /* Re-adding the foreign key revalidates existing data with the same query. */

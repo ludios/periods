@@ -391,3 +391,155 @@ BEGIN
     RETURN NEW;
 END;
 $function$;
+
+/*
+ * validate_foreign_key_new_row() correlated the parent and child key columns
+ * without table qualification.  With same-named columns (child.id referencing
+ * parent.id), "id = id" resolved entirely to the inner uk relation - a
+ * tautology - so the key filter vanished: orphans of other keys were accepted
+ * and valid rows were spuriously rejected when different keys' periods
+ * overlapped.  Qualify both sides.  The violation errors also now carry
+ * SQLSTATE 23503 (foreign_key_violation) like native foreign keys.
+ */
+CREATE OR REPLACE FUNCTION periods.validate_foreign_key_new_row(foreign_key_name name, row_data jsonb)
+ RETURNS boolean
+ LANGUAGE plpgsql
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    foreign_key_info record;
+    row_clause text DEFAULT 'true';
+    violation boolean;
+
+	QSQL CONSTANT text :=
+        'SELECT EXISTS ( '
+        '    SELECT FROM %5$I.%6$I AS fk '
+        '    WHERE NOT EXISTS ( '
+        '        SELECT FROM (SELECT uk.uk_start_value, '
+        '                            uk.uk_end_value, '
+        '                            nullif(lag(uk.uk_end_value) OVER (ORDER BY uk.uk_start_value), uk.uk_start_value) AS x '
+        '                     FROM (SELECT uk.%3$I AS uk_start_value, '
+        '                                  uk.%4$I AS uk_end_value '
+        '                           FROM %1$I.%2$I AS uk '
+        '                           WHERE %9$s '
+        '                             AND uk.%3$I <= fk.%8$I '
+        '                             AND uk.%4$I >= fk.%7$I '
+        '                           FOR KEY SHARE '
+        '                          ) AS uk '
+        '                    ) AS uk '
+        '        WHERE uk.uk_start_value < fk.%8$I '
+        '          AND uk.uk_end_value >= fk.%7$I '
+        '        HAVING min(uk.uk_start_value) <= fk.%7$I '
+        '           AND max(uk.uk_end_value) >= fk.%8$I '
+        '           AND array_agg(uk.x) FILTER (WHERE uk.x IS NOT NULL) IS NULL '
+        '    ) AND %10$s '
+        ')';
+
+BEGIN
+    SELECT fc.oid AS fk_table_oid,
+           fn.nspname AS fk_schema_name,
+           fc.relname AS fk_table_name,
+           fk.column_names AS fk_column_names,
+           fp.period_name AS fk_period_name,
+           fp.start_column_name AS fk_start_column_name,
+           fp.end_column_name AS fk_end_column_name,
+
+           un.nspname AS uk_schema_name,
+           uc.relname AS uk_table_name,
+           uk.column_names AS uk_column_names,
+           up.period_name AS uk_period_name,
+           up.start_column_name AS uk_start_column_name,
+           up.end_column_name AS uk_end_column_name,
+
+           fk.match_type,
+           fk.update_action,
+           fk.delete_action
+    INTO foreign_key_info
+    FROM periods.foreign_keys AS fk
+    JOIN periods.periods AS fp ON (fp.table_name, fp.period_name) = (fk.table_name, fk.period_name)
+    JOIN pg_catalog.pg_class AS fc ON fc.oid = fk.table_name
+    JOIN pg_catalog.pg_namespace AS fn ON fn.oid = fc.relnamespace
+    JOIN periods.unique_keys AS uk ON uk.key_name = fk.unique_key
+    JOIN periods.periods AS up ON (up.table_name, up.period_name) = (uk.table_name, uk.period_name)
+    JOIN pg_catalog.pg_class AS uc ON uc.oid = uk.table_name
+    JOIN pg_catalog.pg_namespace AS un ON un.oid = uc.relnamespace
+    WHERE fk.key_name = foreign_key_name;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'foreign key "%" not found', foreign_key_name;
+    END IF;
+
+    /*
+     * Now that we have all of our names, we can see if there are any nulls in
+     * the row we were given (if we were given one).
+     */
+    IF row_data IS NOT NULL THEN
+        DECLARE
+            column_name name;
+            has_nulls boolean;
+            all_nulls boolean;
+            cols text[] DEFAULT '{}';
+            vals text[] DEFAULT '{}';
+        BEGIN
+            FOREACH column_name IN ARRAY foreign_key_info.fk_column_names LOOP
+                has_nulls := has_nulls OR row_data->>column_name IS NULL;
+                all_nulls := all_nulls IS NOT false AND row_data->>column_name IS NULL;
+                cols := cols || ('fk.' || quote_ident(column_name));
+                vals := vals || quote_literal(row_data->>column_name);
+            END LOOP;
+
+            IF all_nulls THEN
+                /*
+                 * If there are no values at all, all three types pass.
+                 *
+                 * Period columns are by definition NOT NULL so the FULL MATCH
+                 * type is only concerned with the non-period columns of the
+                 * constraint.  SQL:2016 4.23.3.3
+                 */
+                RETURN true;
+            END IF;
+
+            IF has_nulls THEN
+                CASE foreign_key_info.match_type
+                    WHEN 'SIMPLE' THEN
+                        RETURN true;
+                    WHEN 'PARTIAL' THEN
+                        RAISE EXCEPTION 'partial not implemented';
+                    WHEN 'FULL' THEN
+                        RAISE EXCEPTION 'foreign key violated (nulls in FULL)';
+                END CASE;
+            END IF;
+
+            row_clause := format(' (%s) = (%s)', array_to_string(cols, ', '), array_to_string(vals, ', '));
+        END;
+    END IF;
+
+    EXECUTE format(QSQL, foreign_key_info.uk_schema_name,
+                         foreign_key_info.uk_table_name,
+                         foreign_key_info.uk_start_column_name,
+                         foreign_key_info.uk_end_column_name,
+                         foreign_key_info.fk_schema_name,
+                         foreign_key_info.fk_table_name,
+                         foreign_key_info.fk_start_column_name,
+                         foreign_key_info.fk_end_column_name,
+                         (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
+                          FROM unnest(foreign_key_info.uk_column_names,
+                                      foreign_key_info.fk_column_names) AS u (ukc, fkc)
+                         ),
+                         row_clause)
+    INTO violation;
+
+    IF violation THEN
+        IF row_data IS NULL THEN
+            RAISE EXCEPTION 'foreign key violated by some row' USING ERRCODE = 'foreign_key_violation';
+        ELSE
+            RAISE EXCEPTION 'insert or update on table "%" violates foreign key constraint "%"',
+                foreign_key_info.fk_table_oid::regclass,
+                foreign_key_name USING ERRCODE = 'foreign_key_violation';
+        END IF;
+    END IF;
+
+    RETURN true;
+END;
+$function$;
