@@ -608,12 +608,15 @@ SELECT periods.add_period('nn', 'p', 's', 'e');
 (1 row)
 
 ALTER TABLE nn ALTER COLUMN s DROP NOT NULL;
+ERROR:  cannot drop NOT NULL from column "s" of table "nn" because it is part of the period "p"
+CONTEXT:  PL/pgSQL function periods.health_checks() line 320 at RAISE
 INSERT INTO nn VALUES (1, NULL, 10);
+ERROR:  null value in column "s" of relation "nn" violates not-null constraint
+DETAIL:  Failing row contains (1, null, 10).
 SELECT id, s, e FROM nn ORDER BY id;
- id | s | e  
-----+---+----
-  1 |   | 10
-(1 row)
+ id | s | e 
+----+---+---
+(0 rows)
 
 SELECT periods.drop_period('nn', 'p');
  drop_period 
