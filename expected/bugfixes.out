@@ -970,7 +970,7 @@ NOTICE:  history table "b31_inj_history" created for "b31_inj", be sure to index
 SELECT EXISTS (SELECT FROM pg_temp.b31_marker) AS injection_fired;
  injection_fired 
 -----------------
- t
+ f
 (1 row)
 
 SELECT periods.drop_system_versioning('b31_inj', drop_behavior => 'CASCADE', purge => true);
@@ -995,28 +995,22 @@ SELECT periods.add_system_time_period('b31_ok', 's''', 'e''');
 
 SELECT periods.add_system_versioning('b31_ok');
 NOTICE:  history table "b31_ok_history" created for "b31_ok", be sure to index it properly
-ERROR:  syntax error at or near "" <= $1 AND ""
-LINE 6: ...SELECT * FROM public.b31_ok_with_history WHERE "s'" <= $1 AN...
-                                                             ^
-QUERY:  
-        CREATE FUNCTION public.b31_ok__as_of(timestamp with time zone)
-         RETURNS SETOF public.b31_ok_with_history
-         LANGUAGE sql
-         STABLE
-        AS 'SELECT * FROM public.b31_ok_with_history WHERE "s'" <= $1 AND "e'" > $1'
-        
-CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 180 at EXECUTE
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
 INSERT INTO b31_ok (id, val) VALUES (1, 'a');
 SELECT val FROM b31_ok__as_of(transaction_timestamp()) ORDER BY val;
-ERROR:  function b31_ok__as_of(timestamp with time zone) does not exist
-LINE 1: SELECT val FROM b31_ok__as_of(transaction_timestamp()) ORDER...
-                        ^
-HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+ val 
+-----
+ a
+(1 row)
+
 SELECT periods.drop_system_versioning('b31_ok', drop_behavior => 'CASCADE', purge => true);
-NOTICE:  table b31_ok does not have SYSTEM VERSIONING
  drop_system_versioning 
 ------------------------
- f
+ t
 (1 row)
 
 DROP TABLE b31_ok;

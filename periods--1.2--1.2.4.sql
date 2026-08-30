@@ -1,4 +1,5 @@
 -- Model-output: Claude Fable 5
+-- Model-output: Claude Opus 4.8
 /* periods--1.2--1.2.4.sql: bug fixes on top of the 1.2 schema (no catalog changes) */
 
 /*
@@ -1454,5 +1455,335 @@ BEGIN
     END IF;
 
     RETURN NULL;
+END;
+$function$;
+
+/*
+ * §3.1: add_system_versioning() built the four generated temporal helper
+ * functions (__as_of, __between, __between_symmetric, __from_to) by
+ * interpolating the SYSTEM_TIME period's column names with %I *inside* a
+ * single-quoted function-body literal.  %I (quote_ident) escapes embedded
+ * double quotes but not the single quotes delimiting that literal, so a period
+ * column name containing a single quote closed the body early and -- with
+ * check_function_bodies = off -- ran the trailing text as extra statements
+ * under the SECURITY DEFINER (superuser) owner.  Each body is now assembled
+ * with an inner format() (identifiers via %I) and embedded into the CREATE
+ * FUNCTION command via %L, which doubles any single quotes so the literal can
+ * no longer be broken out of.  This also hardens a hostile schema or view name.
+ */
+CREATE OR REPLACE FUNCTION periods.add_system_versioning(
+    table_class regclass,
+    history_table_name name DEFAULT NULL,
+    view_name name DEFAULT NULL,
+    function_as_of_name name DEFAULT NULL,
+    function_between_name name DEFAULT NULL,
+    function_between_symmetric_name name DEFAULT NULL,
+    function_from_to_name name DEFAULT NULL)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    schema_name name;
+    table_name name;
+    table_owner regrole;
+    persistence "char";
+    kind "char";
+    period_row periods.periods;
+    history_table_id oid;
+    sql text;
+    grantees text;
+BEGIN
+    IF table_class IS NULL THEN
+        RAISE EXCEPTION 'no table name specified';
+    END IF;
+
+    /* Always serialize operations on our catalogs */
+    PERFORM periods._serialize(table_class);
+
+    /*
+     * REFERENCES:
+     *     SQL:2016 4.15.2.2
+     *     SQL:2016 11.3 SR 2.3
+     *     SQL:2016 11.3 GR 1.c
+     *     SQL:2016 11.29
+     */
+
+    /* Already registered? SQL:2016 11.29 SR 5 */
+    IF EXISTS (SELECT FROM periods.system_versioning AS r WHERE r.table_name = table_class) THEN
+        RAISE EXCEPTION 'table already has SYSTEM VERSIONING';
+    END IF;
+
+    /* Must be a regular persistent base table. SQL:2016 11.29 SR 2 */
+
+    SELECT n.nspname, c.relname, c.relowner, c.relpersistence, c.relkind
+    INTO schema_name, table_name, table_owner, persistence, kind
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE c.oid = table_class;
+
+    IF kind <> 'r' THEN
+        /*
+         * The main reason partitioned tables aren't supported yet is simply
+         * because I haven't put any thought into it.
+         * Maybe it's trivial, maybe not.
+         */
+        IF kind = 'p' THEN
+            RAISE EXCEPTION 'partitioned tables are not supported yet';
+        END IF;
+
+        RAISE EXCEPTION 'relation % is not a table', $1;
+    END IF;
+
+    IF persistence <> 'p' THEN
+        /*
+         * We could probably accept unlogged tables if the history table is
+         * also unlogged, but what's the point?
+         */
+        RAISE EXCEPTION 'table "%" must be persistent', table_class;
+    END IF;
+
+    /* We need a SYSTEM_TIME period. SQL:2016 11.29 SR 4 */
+    SELECT p.*
+    INTO period_row
+    FROM periods.periods AS p
+    WHERE (p.table_name, p.period_name) = (table_class, 'system_time');
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'no period for SYSTEM_TIME found for table %', table_class;
+    END IF;
+
+    /* Get all of our "fake" infrastructure ready */
+    history_table_name := coalesce(history_table_name, periods._choose_name(ARRAY[table_name], 'history'));
+    view_name := coalesce(view_name, periods._choose_name(ARRAY[table_name], 'with_history'));
+    function_as_of_name := coalesce(function_as_of_name, periods._choose_name(ARRAY[table_name], '_as_of'));
+    function_between_name := coalesce(function_between_name, periods._choose_name(ARRAY[table_name], '_between'));
+    function_between_symmetric_name := coalesce(function_between_symmetric_name, periods._choose_name(ARRAY[table_name], '_between_symmetric'));
+    function_from_to_name := coalesce(function_from_to_name, periods._choose_name(ARRAY[table_name], '_from_to'));
+
+    /*
+     * Create the history table.  If it already exists we check that all the
+     * columns match but otherwise we trust the user.  Perhaps the history
+     * table was disconnected in order to change the schema (a case which is
+     * not defined by the SQL standard).  Or perhaps the user wanted to
+     * partition the history table.
+     *
+     * There shouldn't be any concurrency issues here because our main catalog
+     * is locked.
+     */
+    SELECT c.oid
+    INTO history_table_id
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE (n.nspname, c.relname) = (schema_name, history_table_name);
+
+    IF FOUND THEN
+        /* Don't allow any periods on the history table (this might be relaxed later) */
+        IF EXISTS (SELECT FROM periods.periods AS p WHERE p.table_name = history_table_id) THEN
+            RAISE EXCEPTION 'history tables for SYSTEM VERSIONING cannot have periods';
+        END IF;
+
+        /*
+         * The query to the attributes is harder than one would think because
+         * we need to account for dropped columns.  Basically what we're
+         * looking for is that all columns have the same name, type, and
+         * collation.
+         */
+        IF EXISTS (
+            WITH
+            L (attname, atttypid, atttypmod, attcollation) AS (
+                SELECT a.attname, a.atttypid, a.atttypmod, a.attcollation
+                FROM pg_catalog.pg_attribute AS a
+                WHERE a.attrelid = table_class
+                  AND NOT a.attisdropped
+            ),
+            R (attname, atttypid, atttypmod, attcollation) AS (
+                SELECT a.attname, a.atttypid, a.atttypmod, a.attcollation
+                FROM pg_catalog.pg_attribute AS a
+                WHERE a.attrelid = history_table_id
+                  AND NOT a.attisdropped
+            )
+            SELECT FROM L NATURAL FULL JOIN R
+            WHERE L.attname IS NULL OR R.attname IS NULL)
+        THEN
+            RAISE EXCEPTION 'base table "%" and history table "%" are not compatible',
+                table_class, history_table_id::regclass;
+        END IF;
+
+        /* Make sure the owner is correct */
+        EXECUTE format('ALTER TABLE %s OWNER TO %I', history_table_id::regclass, table_owner);
+
+        /*
+         * Remove all privileges other than SELECT from everyone on the history
+         * table.  We do this without error because some privileges may have
+         * been added in order to do maintenance while we were disconnected.
+         *
+         * We start by doing the table owner because that will make sure we
+         * don't have NULL in pg_class.relacl.
+         */
+        --EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE %s FROM %I',
+            --history_table_id::regclass, table_owner);
+    ELSE
+        EXECUTE format('CREATE TABLE %1$I.%2$I (LIKE %1$I.%3$I)', schema_name, history_table_name, table_name);
+        history_table_id := format('%I.%I', schema_name, history_table_name)::regclass;
+
+        EXECUTE format('ALTER TABLE %1$I.%2$I OWNER TO %3$I', schema_name, history_table_name, table_owner);
+
+        RAISE NOTICE 'history table "%" created for "%", be sure to index it properly',
+            history_table_id::regclass, table_class;
+    END IF;
+
+    /* Create the "with history" view.  This one we do want to error out on if it exists. */
+    EXECUTE format(
+        /*
+         * The query we really want here is
+         *
+         *     CREATE VIEW view_name AS
+         *         TABLE table_name
+         *         UNION ALL CORRESPONDING
+         *         TABLE history_table_name
+         *
+         * but PostgreSQL doesn't support that syntax (yet), so we have to do
+         * it manually.
+         */
+        'CREATE VIEW %1$I.%2$I AS SELECT %5$s FROM %1$I.%3$I UNION ALL SELECT %5$s FROM %1$I.%4$I',
+        schema_name, view_name, table_name, history_table_name,
+        (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum)
+         FROM pg_attribute AS a
+         WHERE a.attrelid = table_class
+           AND a.attnum > 0
+           AND NOT a.attisdropped
+        ));
+    EXECUTE format('ALTER VIEW %1$I.%2$I OWNER TO %3$I', schema_name, view_name, table_owner);
+
+    /*
+     * Create functions to simulate the system versioned grammar.  These must
+     * be inlinable for any kind of performance.
+     */
+    EXECUTE format(
+        $$
+        CREATE FUNCTION %1$I.%2$I(timestamp with time zone)
+         RETURNS SETOF %1$I.%3$I
+         LANGUAGE sql
+         STABLE
+        AS %4$L
+        $$, schema_name, function_as_of_name, view_name,
+        format('SELECT * FROM %1$I.%2$I WHERE %3$I <= $1 AND %4$I > $1',
+               schema_name, view_name, period_row.start_column_name, period_row.end_column_name));
+    EXECUTE format('ALTER FUNCTION %1$I.%2$I(timestamp with time zone) OWNER TO %3$I',
+        schema_name, function_as_of_name, table_owner);
+
+    EXECUTE format(
+        $$
+        CREATE FUNCTION %1$I.%2$I(timestamp with time zone, timestamp with time zone)
+         RETURNS SETOF %1$I.%3$I
+         LANGUAGE sql
+         STABLE
+        AS %4$L
+        $$, schema_name, function_between_name, view_name,
+        format('SELECT * FROM %1$I.%2$I WHERE $1 <= $2 AND %4$I > $1 AND %3$I <= $2',
+               schema_name, view_name, period_row.start_column_name, period_row.end_column_name));
+    EXECUTE format('ALTER FUNCTION %1$I.%2$I(timestamp with time zone, timestamp with time zone) OWNER TO %3$I',
+        schema_name, function_between_name, table_owner);
+
+    EXECUTE format(
+        $$
+        CREATE FUNCTION %1$I.%2$I(timestamp with time zone, timestamp with time zone)
+         RETURNS SETOF %1$I.%3$I
+         LANGUAGE sql
+         STABLE
+        AS %4$L
+        $$, schema_name, function_between_symmetric_name, view_name,
+        format('SELECT * FROM %1$I.%2$I WHERE %4$I > least($1, $2) AND %3$I <= greatest($1, $2)',
+               schema_name, view_name, period_row.start_column_name, period_row.end_column_name));
+    EXECUTE format('ALTER FUNCTION %1$I.%2$I(timestamp with time zone, timestamp with time zone) OWNER TO %3$I',
+        schema_name, function_between_symmetric_name, table_owner);
+
+    EXECUTE format(
+        $$
+        CREATE FUNCTION %1$I.%2$I(timestamp with time zone, timestamp with time zone)
+         RETURNS SETOF %1$I.%3$I
+         LANGUAGE sql
+         STABLE
+        AS %4$L
+        $$, schema_name, function_from_to_name, view_name,
+        format('SELECT * FROM %1$I.%2$I WHERE $1 < $2 AND %4$I > $1 AND %3$I < $2',
+               schema_name, view_name, period_row.start_column_name, period_row.end_column_name));
+    EXECUTE format('ALTER FUNCTION %1$I.%2$I(timestamp with time zone, timestamp with time zone) OWNER TO %3$I',
+        schema_name, function_from_to_name, table_owner);
+
+    /* Set privileges on history objects */
+    FOR sql IN
+        SELECT format('REVOKE ALL ON %s %s FROM %s',
+                      CASE object_type
+                          WHEN 'r' THEN 'TABLE'
+                          WHEN 'v' THEN 'TABLE'
+                          WHEN 'f' THEN 'FUNCTION'
+                      ELSE 'ERROR'
+                      END,
+                      string_agg(DISTINCT object_name, ', '),
+                      string_agg(DISTINCT quote_ident(COALESCE(a.rolname, 'public')), ', '))
+        FROM (
+            SELECT c.relkind AS object_type,
+                   c.oid::regclass::text AS object_name,
+                   acl.grantee AS grantee
+            FROM pg_class AS c
+            JOIN pg_namespace AS n ON n.oid = c.relnamespace
+            CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
+            WHERE n.nspname = schema_name
+              AND c.relname IN (history_table_name, view_name)
+
+            UNION ALL
+
+            SELECT 'f',
+                   p.oid::regprocedure::text,
+                   acl.grantee
+            FROM pg_proc AS p
+            CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
+            WHERE p.oid = ANY (ARRAY[
+                    format('%I.%I(timestamp with time zone)', schema_name, function_as_of_name)::regprocedure,
+                    format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_between_name)::regprocedure,
+                    format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_between_symmetric_name)::regprocedure,
+                    format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_from_to_name)::regprocedure
+                ])
+        ) AS objects
+        LEFT JOIN pg_authid AS a ON a.oid = objects.grantee
+        GROUP BY objects.object_type
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    FOR grantees IN
+        SELECT string_agg(acl.grantee::regrole::text, ', ')
+        FROM pg_class AS c
+        CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
+        WHERE c.oid = table_class
+          AND acl.privilege_type = 'SELECT'
+    LOOP
+        EXECUTE format('GRANT SELECT ON TABLE %1$I.%2$I, %1$I.%3$I TO %4$s',
+                       schema_name, history_table_name, view_name, grantees);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s, %s, %s, %s TO %s',
+                       format('%I.%I(timestamp with time zone)', schema_name, function_as_of_name)::regprocedure,
+                       format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_between_name)::regprocedure,
+                       format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_between_symmetric_name)::regprocedure,
+                       format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_from_to_name)::regprocedure,
+                       grantees);
+    END LOOP;
+
+    /* Register it */
+    INSERT INTO periods.system_versioning (table_name, period_name, history_table_name, view_name,
+                                           func_as_of, func_between, func_between_symmetric, func_from_to)
+    VALUES (
+        table_class,
+        'system_time',
+        format('%I.%I', schema_name, history_table_name),
+        format('%I.%I', schema_name, view_name),
+        format('%I.%I(timestamp with time zone)', schema_name, function_as_of_name),
+        format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_between_name),
+        format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_between_symmetric_name),
+        format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_from_to_name)
+    );
 END;
 $function$;
