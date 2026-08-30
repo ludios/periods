@@ -36,7 +36,7 @@ NOTICE:  history table "log_history" created for "log", be sure to index it prop
 (1 row)
 
 ALTER TABLE log_history SET UNLOGGED; -- fails
-ERROR:  history table "log" must remain persistent because it has periods
+ERROR:  history table "log_history" must remain persistent because it is used in SYSTEM VERSIONING
 SELECT periods.drop_system_versioning('log', purge => true);
  drop_system_versioning 
 ------------------------

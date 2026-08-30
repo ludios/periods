@@ -1129,12 +1129,12 @@ BEGIN
 
     /* And the history tables, too */
     FOR r IN
-        SELECT sv.table_name
+        SELECT sv.history_table_name AS table_name
         FROM periods.system_versioning AS sv
         JOIN pg_catalog.pg_class AS c ON c.oid = sv.history_table_name
         WHERE c.relpersistence <> 'p'
     LOOP
-        RAISE EXCEPTION 'history table "%" must remain persistent because it has periods',
+        RAISE EXCEPTION 'history table "%" must remain persistent because it is used in SYSTEM VERSIONING',
             r.table_name;
     END LOOP;
 
