@@ -899,3 +899,95 @@ WHERE n.nspname = 'periods'
   AND p.prosecdef
   AND NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, pg_temp']
 ORDER BY p.proname;
+
+/*
+ * §3.3: the DDL entry points are SECURITY DEFINER and executable by PUBLIC, and
+ * never check that the caller may reshape the table they are pointed at.  A
+ * role with no privilege at all on someone else's table can add periods (and
+ * with them CHECK constraints and SET NOT NULL), add SYSTEM_TIME — which adds
+ * two columns — switch on SYSTEM VERSIONING, and tear any of it down again.
+ */
+
+RESET ROLE;
+CREATE ROLE b33_victim;
+CREATE ROLE b33_attacker;
+CREATE ROLE b33_bystander;
+CREATE SCHEMA b33 AUTHORIZATION b33_victim;
+CREATE SCHEMA b33a AUTHORIZATION b33_attacker;
+GRANT USAGE ON SCHEMA b33 TO b33_attacker;
+GRANT USAGE, CREATE ON SCHEMA b33a TO b33_victim;
+
+SET SESSION AUTHORIZATION b33_victim;
+CREATE TABLE b33.vt (id integer PRIMARY KEY, s date NOT NULL, e date NOT NULL, val text);
+SELECT periods.add_period('b33.vt', 'p', 's', 'e');
+SELECT periods.add_unique_key('b33.vt', ARRAY['id'], 'p', 'b33_vt_k');
+/* Same shape b33a.base will have once it is system-time versioned. */
+CREATE TABLE b33a.spoils (id integer, val text, system_time_start timestamptz, system_time_end timestamptz);
+
+/* b33_attacker has no privilege at all on b33.vt, not even SELECT. */
+SET SESSION AUTHORIZATION b33_attacker;
+SELECT count(*) FROM b33.vt;
+SELECT periods.add_period('b33.vt', 'q', 's', 'e');
+SELECT periods.add_system_time_period('b33.vt');
+SELECT periods.set_system_time_period_excluded_columns('b33.vt', ARRAY['val']);
+SELECT periods.add_system_versioning('b33.vt');
+SELECT periods.add_for_portion_view('b33.vt', 'p');
+SELECT periods.add_unique_key('b33.vt', ARRAY['id'], 'p', 'b33_stolen_k');
+SELECT periods.drop_unique_key('b33.vt', 'b33_stolen_k');
+SELECT periods.drop_for_portion_view('b33.vt', 'p');
+SELECT periods.drop_system_versioning('b33.vt', drop_behavior => 'CASCADE', purge => true);
+SELECT periods.drop_system_time_period('b33.vt');
+SELECT periods.drop_period('b33.vt', 'q');
+
+/* A foreign key puts triggers on the *referenced* table, which is the victim's. */
+CREATE TABLE b33a.at (id integer, s date NOT NULL, e date NOT NULL);
+SELECT periods.add_period('b33a.at', 'p', 's', 'e');
+SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk');
+
+/* add_system_versioning() adopts a matching history table and reassigns its owner. */
+CREATE TABLE b33a.base (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('b33a.base');
+SELECT periods.add_system_versioning('b33a.base', 'spoils');
+SELECT relowner::regrole AS spoils_owner
+FROM pg_catalog.pg_class WHERE oid = 'b33a.spoils'::regclass;
+
+/* SET ROLE has to count: session_user here is still the superuser running the tests. */
+RESET SESSION AUTHORIZATION;
+SET ROLE b33_attacker;
+SELECT periods.add_period('b33.vt', 'r', 's', 'e');
+RESET ROLE;
+
+/*
+ * What must keep working: with REFERENCES granted the attacker may legitimately
+ * reference the victim's key, and the victim may still cascade it away.
+ */
+SET SESSION AUTHORIZATION b33_victim;
+GRANT REFERENCES ON TABLE b33.vt TO b33_attacker;
+SET SESSION AUTHORIZATION b33_attacker;
+SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk2');
+
+/*
+ * Naming no table at all is how drop_unique_key()'s CASCADE reaches a foreign
+ * key, so it stays reachable; a role owning neither end still may not use it.
+ */
+SET SESSION AUTHORIZATION b33_bystander;
+SELECT periods.drop_foreign_key(NULL, 'b33_fk2');
+/* The owner of the referencing table may. */
+SET SESSION AUTHORIZATION b33_attacker;
+SELECT periods.drop_foreign_key(NULL, 'b33_fk2');
+SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk3');
+
+/* And the victim can still cascade away a key held by a table it does not own. */
+SET SESSION AUTHORIZATION b33_victim;
+SELECT periods.drop_unique_key('b33.vt', 'b33_vt_k', drop_behavior => 'CASCADE');
+SELECT count(*) AS foreign_keys_left FROM periods.foreign_keys WHERE key_name LIKE 'b33_fk%';
+
+RESET SESSION AUTHORIZATION;
+SELECT periods.drop_system_versioning('b33a.base', drop_behavior => 'CASCADE', purge => true);
+SELECT periods.drop_system_versioning('b33.vt', drop_behavior => 'CASCADE', purge => true);
+DROP SCHEMA b33 CASCADE;
+DROP SCHEMA b33a CASCADE;
+DROP ROLE b33_victim;
+DROP ROLE b33_attacker;
+DROP ROLE b33_bystander;
+SET ROLE TO periods_unprivileged_user;

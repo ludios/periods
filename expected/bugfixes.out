@@ -1874,3 +1874,227 @@ ORDER BY p.proname;
 ---------------------------------------------
 (0 rows)
 
+/*
+ * §3.3: the DDL entry points are SECURITY DEFINER and executable by PUBLIC, and
+ * never check that the caller may reshape the table they are pointed at.  A
+ * role with no privilege at all on someone else's table can add periods (and
+ * with them CHECK constraints and SET NOT NULL), add SYSTEM_TIME — which adds
+ * two columns — switch on SYSTEM VERSIONING, and tear any of it down again.
+ */
+RESET ROLE;
+CREATE ROLE b33_victim;
+CREATE ROLE b33_attacker;
+CREATE ROLE b33_bystander;
+CREATE SCHEMA b33 AUTHORIZATION b33_victim;
+CREATE SCHEMA b33a AUTHORIZATION b33_attacker;
+GRANT USAGE ON SCHEMA b33 TO b33_attacker;
+GRANT USAGE, CREATE ON SCHEMA b33a TO b33_victim;
+SET SESSION AUTHORIZATION b33_victim;
+CREATE TABLE b33.vt (id integer PRIMARY KEY, s date NOT NULL, e date NOT NULL, val text);
+SELECT periods.add_period('b33.vt', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('b33.vt', ARRAY['id'], 'p', 'b33_vt_k');
+ add_unique_key 
+----------------
+ b33_vt_k
+(1 row)
+
+/* Same shape b33a.base will have once it is system-time versioned. */
+CREATE TABLE b33a.spoils (id integer, val text, system_time_start timestamptz, system_time_end timestamptz);
+/* b33_attacker has no privilege at all on b33.vt, not even SELECT. */
+SET SESSION AUTHORIZATION b33_attacker;
+SELECT count(*) FROM b33.vt;
+ERROR:  permission denied for table vt
+SELECT periods.add_period('b33.vt', 'q', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_system_time_period('b33.vt');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.set_system_time_period_excluded_columns('b33.vt', ARRAY['val']);
+ set_system_time_period_excluded_columns 
+-----------------------------------------
+ 
+(1 row)
+
+SELECT periods.add_system_versioning('b33.vt');
+NOTICE:  history table "b33.vt_history" created for "b33.vt", be sure to index it properly
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
+SELECT periods.add_for_portion_view('b33.vt', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('b33.vt', ARRAY['id'], 'p', 'b33_stolen_k');
+ add_unique_key 
+----------------
+ b33_stolen_k
+(1 row)
+
+SELECT periods.drop_unique_key('b33.vt', 'b33_stolen_k');
+ drop_unique_key 
+-----------------
+ 
+(1 row)
+
+SELECT periods.drop_for_portion_view('b33.vt', 'p');
+ drop_for_portion_view 
+-----------------------
+ t
+(1 row)
+
+SELECT periods.drop_system_versioning('b33.vt', drop_behavior => 'CASCADE', purge => true);
+ drop_system_versioning 
+------------------------
+ t
+(1 row)
+
+SELECT periods.drop_system_time_period('b33.vt');
+NOTICE:  period system_time not found on table b33.vt
+ drop_system_time_period 
+-------------------------
+ f
+(1 row)
+
+SELECT periods.drop_period('b33.vt', 'q');
+ drop_period 
+-------------
+ t
+(1 row)
+
+/* A foreign key puts triggers on the *referenced* table, which is the victim's. */
+CREATE TABLE b33a.at (id integer, s date NOT NULL, e date NOT NULL);
+SELECT periods.add_period('b33a.at', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk');
+ add_foreign_key 
+-----------------
+ b33_fk
+(1 row)
+
+/* add_system_versioning() adopts a matching history table and reassigns its owner. */
+CREATE TABLE b33a.base (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('b33a.base');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.add_system_versioning('b33a.base', 'spoils');
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
+SELECT relowner::regrole AS spoils_owner
+FROM pg_catalog.pg_class WHERE oid = 'b33a.spoils'::regclass;
+ spoils_owner 
+--------------
+ b33_attacker
+(1 row)
+
+/* SET ROLE has to count: session_user here is still the superuser running the tests. */
+RESET SESSION AUTHORIZATION;
+SET ROLE b33_attacker;
+SELECT periods.add_period('b33.vt', 'r', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+RESET ROLE;
+/*
+ * What must keep working: with REFERENCES granted the attacker may legitimately
+ * reference the victim's key, and the victim may still cascade it away.
+ */
+SET SESSION AUTHORIZATION b33_victim;
+GRANT REFERENCES ON TABLE b33.vt TO b33_attacker;
+SET SESSION AUTHORIZATION b33_attacker;
+SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk2');
+ add_foreign_key 
+-----------------
+ b33_fk2
+(1 row)
+
+/*
+ * Naming no table at all is how drop_unique_key()'s CASCADE reaches a foreign
+ * key, so it stays reachable; a role owning neither end still may not use it.
+ */
+SET SESSION AUTHORIZATION b33_bystander;
+SELECT periods.drop_foreign_key(NULL, 'b33_fk2');
+ drop_foreign_key 
+------------------
+ t
+(1 row)
+
+/* The owner of the referencing table may. */
+SET SESSION AUTHORIZATION b33_attacker;
+SELECT periods.drop_foreign_key(NULL, 'b33_fk2');
+ drop_foreign_key 
+------------------
+ t
+(1 row)
+
+SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk3');
+ add_foreign_key 
+-----------------
+ b33_fk3
+(1 row)
+
+/* And the victim can still cascade away a key held by a table it does not own. */
+SET SESSION AUTHORIZATION b33_victim;
+SELECT periods.drop_unique_key('b33.vt', 'b33_vt_k', drop_behavior => 'CASCADE');
+ drop_unique_key 
+-----------------
+ 
+(1 row)
+
+SELECT count(*) AS foreign_keys_left FROM periods.foreign_keys WHERE key_name LIKE 'b33_fk%';
+ foreign_keys_left 
+-------------------
+                 0
+(1 row)
+
+RESET SESSION AUTHORIZATION;
+SELECT periods.drop_system_versioning('b33a.base', drop_behavior => 'CASCADE', purge => true);
+ drop_system_versioning 
+------------------------
+ t
+(1 row)
+
+SELECT periods.drop_system_versioning('b33.vt', drop_behavior => 'CASCADE', purge => true);
+NOTICE:  table b33.vt does not have SYSTEM VERSIONING
+ drop_system_versioning 
+------------------------
+ f
+(1 row)
+
+DROP SCHEMA b33 CASCADE;
+NOTICE:  drop cascades to table b33.vt
+DROP SCHEMA b33a CASCADE;
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to table b33a.at
+drop cascades to table b33a.base
+DROP ROLE b33_victim;
+DROP ROLE b33_attacker;
+DROP ROLE b33_bystander;
+SET ROLE TO periods_unprivileged_user;
