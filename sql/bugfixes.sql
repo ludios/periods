@@ -113,3 +113,118 @@ SELECT periods.drop_system_versioning('pc_leak', drop_behavior => 'CASCADE', pur
 DROP TABLE pc_leak;
 DROP SCHEMA pc_leak_hs;
 SET ROLE TO periods_unprivileged_user;
+
+/*
+ * §2.2 (github issue #27): deleting or updating a referenced row must not
+ * orphan children whose periods lie strictly inside the removed interval.
+ * The old parent-side check looked only for children *containing* the whole
+ * removed interval.
+ */
+
+CREATE TABLE fk_parent (id integer, s integer, e integer);
+SELECT periods.add_period('fk_parent', 'p', 's', 'e');
+SELECT periods.add_unique_key('fk_parent', ARRAY['id'], 'p', key_name => 'fk_parent_id_p');
+CREATE TABLE fk_child (id integer, parent_id integer, s integer, e integer);
+SELECT periods.add_period('fk_child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('fk_child', ARRAY['parent_id'], 'p', 'fk_parent_id_p', key_name => 'fk_child_parent_id_p');
+INSERT INTO fk_parent VALUES (1, 0, 100);
+INSERT INTO fk_child VALUES (1, 1, 30, 40);
+
+/* Deleting or shrinking the parent across the child must be blocked. */
+DELETE FROM fk_parent WHERE id = 1;
+UPDATE fk_parent SET s = 35 WHERE id = 1;
+/* Changing the key while a child references it must be blocked. */
+UPDATE fk_parent SET id = 2 WHERE id = 1;
+/* Changes that keep the child covered are allowed. */
+UPDATE fk_parent SET s = 10, e = 90 WHERE id = 1;
+SELECT id, s, e FROM fk_parent ORDER BY id, s;
+SELECT id, parent_id, s, e FROM fk_child ORDER BY id, s;
+
+/* NO ACTION is deferred: replacing coverage within a transaction is allowed. */
+BEGIN;
+DELETE FROM fk_parent WHERE id = 1;
+INSERT INTO fk_parent VALUES (1, 10, 35), (1, 35, 90);
+COMMIT;
+SELECT id, s, e FROM fk_parent ORDER BY id, s;
+
+/* Removing an interior piece of the coverage must still fail at commit. */
+BEGIN;
+DELETE FROM fk_parent WHERE (id, s) = (1, 35);
+COMMIT;
+SELECT id, s, e FROM fk_parent ORDER BY id, s;
+
+/* Once the child is gone, the parent can go too. */
+DELETE FROM fk_child;
+DELETE FROM fk_parent;
+
+/* RESTRICT differs from NO ACTION only in timing in this extension. */
+CREATE TABLE fkr_parent (id integer, s integer, e integer);
+SELECT periods.add_period('fkr_parent', 'p', 's', 'e');
+SELECT periods.add_unique_key('fkr_parent', ARRAY['id'], 'p', key_name => 'fkr_parent_id_p');
+CREATE TABLE fkr_child (id integer, parent_id integer, s integer, e integer);
+SELECT periods.add_period('fkr_child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('fkr_child', ARRAY['parent_id'], 'p', 'fkr_parent_id_p',
+    key_name => 'fkr_child_parent_id_p', update_action => 'RESTRICT', delete_action => 'RESTRICT');
+INSERT INTO fkr_parent VALUES (1, 0, 100);
+INSERT INTO fkr_child VALUES (1, 1, 30, 40);
+DELETE FROM fkr_parent WHERE id = 1;
+/* Extending the parent period keeps the child covered and is allowed. */
+UPDATE fkr_parent SET e = 200 WHERE id = 1;
+SELECT id, s, e FROM fkr_parent ORDER BY id, s;
+
+/* A self-referencing foreign key. */
+CREATE TABLE fk_selfref (id integer, mgr integer, s integer, e integer);
+SELECT periods.add_period('fk_selfref', 'p', 's', 'e');
+SELECT periods.add_unique_key('fk_selfref', ARRAY['id'], 'p', key_name => 'fk_selfref_id_p');
+SELECT periods.add_foreign_key('fk_selfref', ARRAY['mgr'], 'p', 'fk_selfref_id_p', key_name => 'fk_selfref_mgr_p');
+INSERT INTO fk_selfref VALUES (1, 1, 0, 50);
+INSERT INTO fk_selfref VALUES (2, 1, 10, 20);
+/* id 1 is still referenced by id 2. */
+DELETE FROM fk_selfref WHERE id = 1;
+/* id 2 is referenced by nobody. */
+DELETE FROM fk_selfref WHERE id = 2;
+/* Now id 1 references only itself, and deleting it removes both sides. */
+DELETE FROM fk_selfref WHERE id = 1;
+SELECT id, mgr, s, e FROM fk_selfref ORDER BY id, s;
+
+/*
+ * Same-named referencing and referenced columns: the coverage query used to
+ * correlate them without table qualification, so "id = id" collapsed into a
+ * tautology and the key filter vanished, accepting orphans of other keys and
+ * spuriously rejecting valid rows once different keys' periods overlapped.
+ */
+
+CREATE TABLE sn_parent (id integer, s integer, e integer);
+SELECT periods.add_period('sn_parent', 'p', 's', 'e');
+SELECT periods.add_unique_key('sn_parent', ARRAY['id'], 'p', key_name => 'sn_parent_id_p');
+CREATE TABLE sn_child (id integer, s integer, e integer);
+SELECT periods.add_period('sn_child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('sn_child', ARRAY['id'], 'p', 'sn_parent_id_p', key_name => 'sn_child_id_p');
+INSERT INTO sn_parent VALUES (1, 0, 20);
+/* A child with a key that has no parent at all must be rejected. */
+INSERT INTO sn_child VALUES (999, 5, 10);
+/* A properly covered child is accepted. */
+INSERT INTO sn_child VALUES (1, 5, 10);
+INSERT INTO sn_parent VALUES (2, 10, 50);
+/* Overlapping periods of *other* keys must not confuse the check. */
+INSERT INTO sn_child VALUES (1, 12, 18);
+SELECT id, s, e FROM sn_child ORDER BY id, s;
+/* Re-adding the foreign key revalidates existing data with the same query. */
+SELECT periods.drop_foreign_key('sn_child', 'sn_child_id_p');
+SELECT periods.add_foreign_key('sn_child', ARRAY['id'], 'p', 'sn_parent_id_p', key_name => 'sn_child_id_p');
+
+/* Clean up all foreign key test objects. */
+SELECT periods.drop_period('fk_child', 'p', 'CASCADE');
+DROP TABLE fk_child;
+SELECT periods.drop_period('fk_parent', 'p', 'CASCADE');
+DROP TABLE fk_parent;
+SELECT periods.drop_period('fkr_child', 'p', 'CASCADE');
+DROP TABLE fkr_child;
+SELECT periods.drop_period('fkr_parent', 'p', 'CASCADE');
+DROP TABLE fkr_parent;
+SELECT periods.drop_period('fk_selfref', 'p', 'CASCADE');
+DROP TABLE fk_selfref;
+SELECT periods.drop_period('sn_child', 'p', 'CASCADE');
+DROP TABLE sn_child;
+SELECT periods.drop_period('sn_parent', 'p', 'CASCADE');
+DROP TABLE sn_parent;
