@@ -22,6 +22,7 @@ REGRESS = install \
 		  acl \
 		  issues \
 		  beeswax \
+		  bugfixes \
 		  uninstall
 
 PG_CONFIG = pg_config
