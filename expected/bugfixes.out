@@ -1347,18 +1347,21 @@ SELECT periods.add_system_time_period('b14pub');
 
 SELECT periods.add_system_versioning('b14pub');
 NOTICE:  history table "b14pub_history" created for "b14pub", be sure to index it properly
-ERROR:  syntax error at or near "-"
-LINE 1: ...ub_history, public.b14pub_with_history TO bug14_pub_owner, -
-                                                                      ^
-QUERY:  GRANT SELECT ON TABLE public.b14pub_history, public.b14pub_with_history TO bug14_pub_owner, -
-CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 280 at EXECUTE
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
 SELECT pg_catalog.has_table_privilege('bug14_probe', 'b14pub_history', 'SELECT') AS probe_sees_history;
-ERROR:  relation "b14pub_history" does not exist
+ probe_sees_history 
+--------------------
+ t
+(1 row)
+
 SELECT periods.drop_system_versioning('b14pub', drop_behavior => 'CASCADE', purge => true);
-NOTICE:  table b14pub does not have SYSTEM VERSIONING
  drop_system_versioning 
 ------------------------
- f
+ t
 (1 row)
 
 DROP TABLE b14pub;

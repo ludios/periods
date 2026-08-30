@@ -1480,6 +1480,12 @@ $function$;
  * text rendering is already quoted, so any owner whose name needs quoting
  * made add_system_versioning() fail with 'role ""The Owner"" does not exist'
  * (issue #14); they now emit the regrole text with %s.
+ *
+ * The grant-propagation loop rendered grantees with grantee::regrole::text,
+ * and aclexplode() reports PUBLIC as grantee OID 0, whose regrole text is
+ * '-': a base table with GRANT SELECT TO PUBLIC produced 'GRANT ... TO
+ * owner, -' and failed.  The loop now resolves names the way the REVOKE
+ * loop above it always has: quote_ident(COALESCE(rolname, 'public')).
  */
 CREATE OR REPLACE FUNCTION periods.add_system_versioning(
     table_class regclass,
@@ -1766,9 +1772,10 @@ BEGIN
     END LOOP;
 
     FOR grantees IN
-        SELECT string_agg(acl.grantee::regrole::text, ', ')
+        SELECT string_agg(quote_ident(COALESCE(a.rolname, 'public')), ', ')
         FROM pg_class AS c
         CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
+        LEFT JOIN pg_authid AS a ON a.oid = acl.grantee
         WHERE c.oid = table_class
           AND acl.privilege_type = 'SELECT'
     LOOP
