@@ -267,3 +267,18 @@ SELECT periods.drop_period('shc', 'p2', purge => true);
 SELECT count(*) AS constraint_purged FROM pg_catalog.pg_constraint
     WHERE (conrelid, conname) = ('shc'::regclass, 'shc_se_check');
 DROP TABLE shc;
+
+/*
+ * §5.1: period bound columns are by definition NOT NULL and the rest of the
+ * code relies on it, so health_checks() must reject dropping that.
+ * Otherwise a NULL bound slips past the bounds CHECK constraint (NULL is not
+ * false) and produces a nonsense period.
+ */
+
+CREATE TABLE nn (id integer, s integer, e integer);
+SELECT periods.add_period('nn', 'p', 's', 'e');
+ALTER TABLE nn ALTER COLUMN s DROP NOT NULL;
+INSERT INTO nn VALUES (1, NULL, 10);
+SELECT id, s, e FROM nn ORDER BY id;
+SELECT periods.drop_period('nn', 'p');
+DROP TABLE nn;
