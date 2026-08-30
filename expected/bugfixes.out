@@ -1192,13 +1192,13 @@ UPDATE t2_legacy SET system_time_start = 'epoch';
 SELECT id, val, system_time_start = 'epoch' AS forged FROM t2_legacy;
  id | val | forged 
 ----+-----+--------
-  1 | a   | t
+  1 | a   | f
 (1 row)
 
 SELECT count(*) AS history_rows FROM t2_legacy_history;
  history_rows 
 --------------
-            0
+            1
 (1 row)
 
 SELECT periods.drop_system_versioning('t2_legacy', drop_behavior => 'CASCADE', purge => true);

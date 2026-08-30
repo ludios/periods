@@ -181,11 +181,19 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 	Bitmapset	   *excluded_attnums = NULL;
 	MemoryContext	mcxt = CurrentMemoryContext; /* The context outside of SPI */
 
+	/*
+	 * The period's own bound columns are never treated as excluded, whatever
+	 * the catalog says: the SQL API rejects them since 1.2.4, but rows written
+	 * by older versions (or restored from a dump of one) may still carry them,
+	 * and honoring those would let updates forge the bounds with no history.
+	 */
 	const char *sql =
 		"SELECT u.name "
 		"FROM periods.system_time_periods AS stp "
+		"JOIN periods.periods AS p ON (p.table_name, p.period_name) = (stp.table_name, stp.period_name) "
 		"CROSS JOIN unnest(stp.excluded_column_names) AS u (name) "
-		"WHERE stp.table_name = $1";
+		"WHERE stp.table_name = $1 "
+		"AND u.name NOT IN (p.start_column_name, p.end_column_name)";
 	static SPIPlanPtr qplan = NULL;
 
 	if (SPI_connect() != SPI_OK_CONNECT)
