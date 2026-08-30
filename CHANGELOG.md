@@ -136,9 +136,11 @@ New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
     filter no longer leak JSON string quoting into SQL literals.  Datetime
     subtypes only ever worked because their parsers skip double quotes.
     Setting a portion bound to NULL raises 'portion bounds cannot be NULL'
-    instead of a nonsense cast error.  Subtypes whose text form is not their
-    JSON scalar rendering (containers, `jsonb` itself) remain unsupported in
-    `FOR PORTION OF`, as before.
+    instead of a nonsense cast error.  A `jsonb` period subtype keeps its
+    native JSON rendering (string endpoints stay quoted); a JSON-null bound
+    is rejected with the same clean error, since the slice machinery cannot
+    represent a jsonb null.  Container subtypes (arrays, `hstore`) remain
+    unsupported in `FOR PORTION OF`, as before.
 
 ## [1.2] – 2020-09-21
 

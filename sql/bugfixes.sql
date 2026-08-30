@@ -763,3 +763,22 @@ SELECT periods.drop_for_portion_view('fp_arrp', 'p');
 SELECT periods.drop_period('fp_arrp', 'p');
 DROP TABLE fp_arrp;
 DROP TYPE bugfix_intarrrange;
+
+/* Batch-review follow-up: a jsonb period subtype keeps its native JSON
+ * rendering, so string endpoints stay quoted and the previously-working
+ * sequence-backed-PK case still splits.  A JSON-null bound is cleanly
+ * rejected: the jsonb_populate_record() slice machinery cannot represent a
+ * jsonb null (JSON null in a record is SQL NULL), so accepting it would only
+ * trade this error for a NOT NULL violation mid-split. */
+CREATE TYPE bugfix_jsonbrange AS RANGE (subtype = jsonb);
+CREATE TABLE fp_jb (id serial PRIMARY KEY, val text, s jsonb, e jsonb);
+SELECT periods.add_period('fp_jb', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_jb', 'p');
+INSERT INTO fp_jb (val, s, e) VALUES ('a', '"a"', '"zz"');
+UPDATE fp_jb__for_portion_of_p SET val = 'b', s = '"c"', e = '"m"';
+SELECT val, s, e FROM fp_jb ORDER BY s;
+UPDATE fp_jb__for_portion_of_p SET val = 'c', s = 'null', e = '"a"';
+SELECT periods.drop_for_portion_view('fp_jb', 'p');
+SELECT periods.drop_period('fp_jb', 'p');
+DROP TABLE fp_jb;
+DROP TYPE bugfix_jsonbrange;

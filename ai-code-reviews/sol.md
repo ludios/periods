@@ -52,9 +52,13 @@ H7 stays a documented design decision (§5.3).
   failing in the endpoint tests AND in a third interpolation site this
   review missed: the central UPDATE's row filter.  All three sites now
   unwrap the jsonb scalar with `#>> '{}'`, and NULL bounds get a real error.
-  Container-ish subtypes (arrays, hstore, jsonb) remain unsupported in
-  FOR PORTION OF, unchanged from before; the fully general fix is the typed
-  `EXECUTE ... USING` rewrite this review itself defers (F2).
+  A jsonb subtype keeps its native JSON rendering (batch-review finding: its
+  JSON strings must stay quoted), restoring the sequence-backed-PK case that
+  worked before 1.2.4; a JSON-null bound is cleanly rejected because
+  jsonb_populate_record() cannot represent a jsonb null in the slices (JSON
+  null in a record is SQL NULL) — full JSON-null support, like container
+  subtypes (arrays, hstore), needs the typed `EXECUTE ... USING` rewrite
+  this review itself defers (F2).
 
 Not addressed here, deliberately (larger redesigns or out of "easy" scope,
 matching the claude.md deferrals): S1/S2/S3 (§3.2/§3.3), T4, T7, C3, C4,

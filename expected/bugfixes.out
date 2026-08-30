@@ -733,7 +733,7 @@ UPDATE fp_spk__for_portion_of_p SET val = 'b', s = 20, e = 30;
 ERROR:  duplicate key value violates unique constraint "fp_spk_pkey"
 DETAIL:  Key (id)=(1) already exists.
 CONTEXT:  SQL statement "INSERT INTO fp_spk (e, id, s, val) SELECT r.e, r.id, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_spk, '{"e": 20, "s": 10, "id": 1, "val": "a"}') AS r"
-PL/pgSQL function periods.update_portion_of() line 241 at EXECUTE
+PL/pgSQL function periods.update_portion_of() line 265 at EXECUTE
 SELECT id, val, s, e FROM fp_spk ORDER BY s;
  id | val | s  | e  
 ----+-----+----+----
@@ -1620,7 +1620,7 @@ SELECT id, val, s, e FROM fp_datep ORDER BY s;
 /* A NULL portion bound is an error, not a garbage cast */
 UPDATE fp_datep__for_portion_of_p SET val = 'c', s = NULL, e = '2020-06-01';
 ERROR:  portion bounds cannot be NULL
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 122 at RAISE
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 130 at RAISE
 SELECT periods.drop_for_portion_view('fp_datep', 'p');
  drop_for_portion_view 
 -----------------------
@@ -1675,3 +1675,50 @@ SELECT periods.drop_period('fp_arrp', 'p');
 
 DROP TABLE fp_arrp;
 DROP TYPE bugfix_intarrrange;
+/* Batch-review follow-up: a jsonb period subtype keeps its native JSON
+ * rendering, so string endpoints stay quoted and the previously-working
+ * sequence-backed-PK case still splits.  A JSON-null bound is cleanly
+ * rejected: the jsonb_populate_record() slice machinery cannot represent a
+ * jsonb null (JSON null in a record is SQL NULL), so accepting it would only
+ * trade this error for a NOT NULL violation mid-split. */
+CREATE TYPE bugfix_jsonbrange AS RANGE (subtype = jsonb);
+CREATE TABLE fp_jb (id serial PRIMARY KEY, val text, s jsonb, e jsonb);
+SELECT periods.add_period('fp_jb', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_for_portion_view('fp_jb', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+INSERT INTO fp_jb (val, s, e) VALUES ('a', '"a"', '"zz"');
+UPDATE fp_jb__for_portion_of_p SET val = 'b', s = '"c"', e = '"m"';
+SELECT val, s, e FROM fp_jb ORDER BY s;
+ val |  s  |  e   
+-----+-----+------
+ a   | "a" | "c"
+ b   | "c" | "m"
+ a   | "m" | "zz"
+(3 rows)
+
+UPDATE fp_jb__for_portion_of_p SET val = 'c', s = 'null', e = '"a"';
+ERROR:  portion bounds cannot be NULL
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 130 at RAISE
+SELECT periods.drop_for_portion_view('fp_jb', 'p');
+ drop_for_portion_view 
+-----------------------
+ t
+(1 row)
+
+SELECT periods.drop_period('fp_jb', 'p');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_jb;
+DROP TYPE bugfix_jsonbrange;

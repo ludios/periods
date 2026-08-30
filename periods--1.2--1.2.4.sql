@@ -169,10 +169,11 @@ $function$;
  * string quoting into the endpoint-test and row-filter literals.  Datetime
  * subtypes survived only because their input parsers skip double quotes;
  * strict parsers (a range over uuid, say) failed outright.  The endpoint
- * scalars are now unwrapped with #>> '{}', and a NULL bound is rejected with
- * a real error instead of a nonsense cast failure.  Subtypes whose text form
- * is not their JSON scalar rendering (containers, jsonb itself) remain
- * unsupported here, exactly as before.
+ * scalars are now unwrapped with #>> '{}' — except for a jsonb subtype,
+ * whose JSON rendering is already its input form (and whose JSON null is a
+ * real value, not SQL NULL) — and a NULL bound is rejected with a real error
+ * instead of a nonsense cast failure.  Container subtypes (arrays, hstore)
+ * remain unsupported here, exactly as before.
  */
 CREATE OR REPLACE FUNCTION periods.update_portion_of()
  RETURNS trigger
@@ -189,10 +190,14 @@ DECLARE
     jnew jsonb;
     fromval jsonb;
     toval jsonb;
+    from_lit text;
+    to_lit text;
 
     jold jsonb;
     bstartval jsonb;
     bendval jsonb;
+    bstart_lit text;
+    bend_lit text;
 
     pre_row jsonb;
     new_row jsonb;
@@ -295,7 +300,11 @@ BEGIN
     toval := jnew->info.end_column_name;
 
     /* An unbounded portion is not supported; reject it before the casts below
-     * turn the JSON null into a nonsense literal. */
+     * turn the JSON null into a nonsense literal.  This also rejects a jsonb
+     * subtype's JSON-null bound, deliberately: it is a real jsonb value, but
+     * the jsonb_populate_record() slice machinery cannot represent it (JSON
+     * null in a record is SQL NULL), so a clean error here beats a NOT NULL
+     * violation from deep inside the row splitting. */
     IF fromval IS NULL OR jsonb_typeof(fromval) = 'null'
         OR toval IS NULL OR jsonb_typeof(toval) = 'null'
     THEN
@@ -305,6 +314,22 @@ BEGIN
     jold := row_to_json(OLD);
     bstartval := jold->info.start_column_name;
     bendval := jold->info.end_column_name;
+
+    /* Endpoint literals for the range tests and the row filter below.  For a
+     * jsonb subtype the JSON rendering is already the type's input form; for
+     * every other subtype unwrap the JSON scalar, whose quoting is not part
+     * of the value. */
+    IF info.datatype = 'jsonb' THEN
+        from_lit := fromval::text;
+        to_lit := toval::text;
+        bstart_lit := bstartval::text;
+        bend_lit := bendval::text;
+    ELSE
+        from_lit := fromval #>> '{}';
+        to_lit := toval #>> '{}';
+        bstart_lit := bstartval #>> '{}';
+        bend_lit := bendval #>> '{}';
+    END IF;
 
     pre_row := jold;
     new_row := jnew;
@@ -320,7 +345,7 @@ BEGIN
     END IF;
 
     pre_assigned := false;
-    EXECUTE format(TEST_SQL, info.datatype, bstartval #>> '{}', fromval #>> '{}', bendval #>> '{}') INTO test;
+    EXECUTE format(TEST_SQL, info.datatype, bstart_lit, from_lit, bend_lit) INTO test;
     IF test THEN
         pre_assigned := true;
         pre_row := jsonb_set(pre_row, ARRAY[info.end_column_name], fromval);
@@ -328,7 +353,7 @@ BEGIN
     END IF;
 
     post_assigned := false;
-    EXECUTE format(TEST_SQL, info.datatype, bstartval #>> '{}', toval #>> '{}', bendval #>> '{}') INTO test;
+    EXECUTE format(TEST_SQL, info.datatype, bstart_lit, to_lit, bend_lit) INTO test;
     IF test THEN
         post_assigned := true;
         new_row := jsonb_set(new_row, ARRAY[info.end_column_name], toval::jsonb);
@@ -450,9 +475,9 @@ BEGIN
                    changed_row,
                    where_clause,
                    info.end_column_name,
-                   fromval #>> '{}',
+                   from_lit,
                    info.start_column_name,
-                   toval #>> '{}'
+                   to_lit
                   );
 
     IF post_assigned THEN
