@@ -521,7 +521,7 @@ BEGIN
                     WHEN 'PARTIAL' THEN
                         RAISE EXCEPTION 'partial not implemented';
                     WHEN 'FULL' THEN
-                        RAISE EXCEPTION 'foreign key violated (nulls in FULL)';
+                        RAISE EXCEPTION 'foreign key violated (nulls in FULL)' USING ERRCODE = 'foreign_key_violation';
                 END CASE;
             END IF;
 
