@@ -991,3 +991,131 @@ DROP ROLE b33_victim;
 DROP ROLE b33_attacker;
 DROP ROLE b33_bystander;
 SET ROLE TO periods_unprivileged_user;
+
+/*
+ * §3.3 follow-up: drop_for_portion_view(NULL, NULL) documents itself as "drop
+ * the views everywhere", so the table argument cannot be what authorizes it.
+ */
+
+RESET ROLE;
+CREATE ROLE b33_bulk;
+SET ROLE TO periods_unprivileged_user;
+CREATE TABLE b33_fpv (id integer PRIMARY KEY, s date NOT NULL, e date NOT NULL);
+SELECT periods.add_period('b33_fpv', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('b33_fpv', 'p');
+RESET ROLE;
+
+SET SESSION AUTHORIZATION b33_bulk;
+SELECT periods.drop_for_portion_view(NULL, NULL);
+RESET SESSION AUTHORIZATION;
+SELECT count(*) AS views_left FROM periods.for_portion_views WHERE table_name = 'b33_fpv'::regclass;
+
+SET ROLE TO periods_unprivileged_user;
+SELECT periods.drop_for_portion_view('b33_fpv', 'p');
+DROP TABLE b33_fpv;
+RESET ROLE;
+DROP ROLE b33_bulk;
+
+/*
+ * §3.3 follow-up: dropping your own table has to keep working when the other
+ * end of a temporal foreign key belongs to someone else.  The sql_drop event
+ * trigger cleans the key up after the relation is already gone, so ownership
+ * of the surviving opposite end cannot be what authorizes the cleanup.
+ */
+
+CREATE ROLE b33_p;
+CREATE ROLE b33_c;
+CREATE SCHEMA b33p AUTHORIZATION b33_p;
+CREATE SCHEMA b33c AUTHORIZATION b33_c;
+GRANT USAGE ON SCHEMA b33p TO b33_c;
+
+SET SESSION AUTHORIZATION b33_p;
+CREATE TABLE b33p.parent (id integer, s date NOT NULL, e date NOT NULL, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('b33p.parent', 'p', 's', 'e');
+SELECT periods.add_unique_key('b33p.parent', ARRAY['id'], 'p', 'b33_puk');
+GRANT REFERENCES ON TABLE b33p.parent TO b33_c;
+
+SET SESSION AUTHORIZATION b33_c;
+CREATE TABLE b33c.child (id integer, s date NOT NULL, e date NOT NULL);
+SELECT periods.add_period('b33c.child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('b33c.child', ARRAY['id'], 'p', 'b33_puk', key_name => 'b33_cfk');
+DROP TABLE b33c.child;
+RESET SESSION AUTHORIZATION;
+SELECT (to_regclass('b33c.child') IS NULL) AS child_dropped,
+       count(*) AS foreign_keys_left
+FROM periods.foreign_keys WHERE key_name = 'b33_cfk';
+
+/* Same from the other side: the parent's owner drops the parent. */
+SET SESSION AUTHORIZATION b33_c;
+CREATE TABLE b33c.child (id integer, s date NOT NULL, e date NOT NULL);
+SELECT periods.add_period('b33c.child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('b33c.child', ARRAY['id'], 'p', 'b33_puk', key_name => 'b33_cfk2');
+SET SESSION AUTHORIZATION b33_p;
+DROP TABLE b33p.parent;
+RESET SESSION AUTHORIZATION;
+SELECT (to_regclass('b33p.parent') IS NULL) AS parent_dropped,
+       count(*) AS foreign_keys_left
+FROM periods.foreign_keys WHERE key_name = 'b33_cfk2';
+
+DROP SCHEMA b33p CASCADE;
+DROP SCHEMA b33c CASCADE;
+DROP ROLE b33_p;
+DROP ROLE b33_c;
+SET ROLE TO periods_unprivileged_user;
+
+/*
+ * §3.2 follow-up: the bounds check add_period() creates compares the period's
+ * columns with the range type's own "less than" operator.  Pinning the
+ * search_path hides that operator when it lives outside pg_catalog, so a range
+ * type over a user-defined subtype could no longer get a period at all.  The
+ * comparison text has to name the operator the way pg_get_constraintdef() will
+ * render it back, because rename_following() re-discovers the constraint by
+ * comparing the two.
+ */
+
+RESET ROLE;
+CREATE SCHEMA b33ops;
+GRANT USAGE ON SCHEMA b33ops TO PUBLIC;
+/* the shell-type notices are rendered differently across versions */
+SET client_min_messages TO warning;
+CREATE TYPE b33ops.myint;
+CREATE FUNCTION b33ops.myint_in(cstring) RETURNS b33ops.myint LANGUAGE internal IMMUTABLE STRICT AS 'int4in';
+CREATE FUNCTION b33ops.myint_out(b33ops.myint) RETURNS cstring LANGUAGE internal IMMUTABLE STRICT AS 'int4out';
+CREATE TYPE b33ops.myint (INPUT = b33ops.myint_in, OUTPUT = b33ops.myint_out, LIKE = int4);
+CREATE FUNCTION b33ops.cmp(b33ops.myint, b33ops.myint) RETURNS integer LANGUAGE internal IMMUTABLE STRICT AS 'btint4cmp';
+CREATE FUNCTION b33ops.lt(b33ops.myint, b33ops.myint) RETURNS boolean LANGUAGE internal IMMUTABLE STRICT AS 'int4lt';
+CREATE FUNCTION b33ops.le(b33ops.myint, b33ops.myint) RETURNS boolean LANGUAGE internal IMMUTABLE STRICT AS 'int4le';
+CREATE FUNCTION b33ops.eq(b33ops.myint, b33ops.myint) RETURNS boolean LANGUAGE internal IMMUTABLE STRICT AS 'int4eq';
+CREATE FUNCTION b33ops.ge(b33ops.myint, b33ops.myint) RETURNS boolean LANGUAGE internal IMMUTABLE STRICT AS 'int4ge';
+CREATE FUNCTION b33ops.gt(b33ops.myint, b33ops.myint) RETURNS boolean LANGUAGE internal IMMUTABLE STRICT AS 'int4gt';
+CREATE OPERATOR b33ops.< (LEFTARG = b33ops.myint, RIGHTARG = b33ops.myint, FUNCTION = b33ops.lt);
+CREATE OPERATOR b33ops.<= (LEFTARG = b33ops.myint, RIGHTARG = b33ops.myint, FUNCTION = b33ops.le);
+CREATE OPERATOR b33ops.= (LEFTARG = b33ops.myint, RIGHTARG = b33ops.myint, FUNCTION = b33ops.eq);
+CREATE OPERATOR b33ops.>= (LEFTARG = b33ops.myint, RIGHTARG = b33ops.myint, FUNCTION = b33ops.ge);
+CREATE OPERATOR b33ops.> (LEFTARG = b33ops.myint, RIGHTARG = b33ops.myint, FUNCTION = b33ops.gt);
+CREATE OPERATOR CLASS b33ops.myint_ops DEFAULT FOR TYPE b33ops.myint USING btree AS
+    OPERATOR 1 b33ops.<, OPERATOR 2 b33ops.<=, OPERATOR 3 b33ops.=,
+    OPERATOR 4 b33ops.>=, OPERATOR 5 b33ops.>,
+    FUNCTION 1 b33ops.cmp(b33ops.myint, b33ops.myint);
+CREATE TYPE b33ops.myrange AS RANGE (SUBTYPE = b33ops.myint);
+RESET client_min_messages;
+
+SET ROLE TO periods_unprivileged_user;
+CREATE TABLE b33mt (id integer, s b33ops.myint NOT NULL, e b33ops.myint NOT NULL);
+SELECT periods.add_period('b33mt', 'p', 's', 'e', 'b33ops.myrange');
+SELECT pg_catalog.pg_get_constraintdef(c.oid) AS bounds_check
+FROM pg_catalog.pg_constraint AS c
+WHERE c.conrelid = 'b33mt'::regclass AND c.contype = 'c';
+
+/* rename_following has to re-find it by rebuilding the same text */
+ALTER TABLE b33mt RENAME CONSTRAINT b33mt_p_check TO b33mt_renamed;
+SELECT bounds_check_constraint FROM periods.periods WHERE table_name = 'b33mt'::regclass;
+
+SELECT periods.drop_period('b33mt', 'p', purge => true);
+DROP TABLE b33mt;
+RESET ROLE;
+/* the cascade list is long and its order is not ours to depend on */
+SET client_min_messages TO warning;
+DROP SCHEMA b33ops CASCADE;
+RESET client_min_messages;
+SET ROLE TO periods_unprivileged_user;

@@ -42,6 +42,12 @@ New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
     `pg_constraint`, `pg_namespace` and `pg_authid` are now schema-qualified as
     well, so that route stays closed even without the pinned path.
 
+    The bounds check `add_period()` creates now names the range subtype's own
+    "less than" operator, schema-qualified when the pinned path does not make it
+    visible, so a range type over a user-defined subtype still works;
+    `rename_following()` rebuilds the same text through the same helper, so the
+    two continue to agree.
+
     User-visible consequence: `regclass` and `regprocedure` values interpolated
     into messages now render schema-qualified, so `table "dp"` reads
     `table "public.dp"`.
@@ -70,6 +76,12 @@ New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
     *immediate* caller's identity inside a definer frame, so if you wrap a
     `periods` call in your own `SECURITY DEFINER` function the check sees
     whoever called your wrapper, not your wrapper's owner.
+
+    `drop_for_portion_view(NULL, NULL)` means "drop the views everywhere", so it
+    authorizes every view it is about to remove rather than relying on the table
+    argument.  `drop_foreign_key()` stops checking once either end of the key has
+    been dropped, since that is the `sql_drop` event trigger clearing up after a
+    table whose owner we can no longer ask about.
 
     `EXECUTE` is deliberately still granted to `PUBLIC`: these functions are
     meant to be used by ordinary table owners.
