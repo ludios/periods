@@ -543,3 +543,175 @@ BEGIN
     RETURN true;
 END;
 $function$;
+
+/*
+ * The parent-side foreign key check looked for a child whose period contained
+ * the entire removed parent interval, so children lying strictly inside it
+ * were silently orphaned by parent DELETEs and period-shrinking or
+ * key-changing UPDATEs (github issue #27).  Re-check the affected children
+ * with the same aggregated-coverage logic used on the child side.
+ */
+CREATE OR REPLACE FUNCTION periods.validate_foreign_key_old_row(foreign_key_name name, row_data jsonb, is_update boolean)
+ RETURNS boolean
+ LANGUAGE plpgsql
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    foreign_key_info record;
+    column_name name;
+    has_nulls boolean;
+    uk_column_names text[];
+    uk_column_values text[];
+    fk_column_names text;
+    violation boolean;
+    still_matches boolean;
+
+    QSQL CONSTANT text :=
+        'SELECT EXISTS ( '
+        '    SELECT FROM %1$I.%2$I AS t '
+        '    WHERE ROW(%3$s) = ROW(%6$s) '
+        '      AND t.%4$I <= %7$L '
+        '      AND t.%5$I >= %8$L '
+        '%9$s'
+        ')';
+
+    /*
+     * Keep this in sync with QSQL in validate_foreign_key_new_row(); it is the
+     * same aggregated-coverage test, here applied to the children of the
+     * removed or updated referenced row.  No plpgsql BEGIN/EXCEPTION may be
+     * used around it: these checks also run from deferred constraint triggers
+     * during COMMIT, where starting a subtransaction is not allowed.
+     */
+    COVERAGE_SQL CONSTANT text :=
+        'SELECT EXISTS ( '
+        '    SELECT FROM %5$I.%6$I AS fk '
+        '    WHERE NOT EXISTS ( '
+        '        SELECT FROM (SELECT uk.uk_start_value, '
+        '                            uk.uk_end_value, '
+        '                            nullif(lag(uk.uk_end_value) OVER (ORDER BY uk.uk_start_value), uk.uk_start_value) AS x '
+        '                     FROM (SELECT uk.%3$I AS uk_start_value, '
+        '                                  uk.%4$I AS uk_end_value '
+        '                           FROM %1$I.%2$I AS uk '
+        '                           WHERE %9$s '
+        '                             AND uk.%3$I <= fk.%8$I '
+        '                             AND uk.%4$I >= fk.%7$I '
+        '                           FOR KEY SHARE '
+        '                          ) AS uk '
+        '                    ) AS uk '
+        '        WHERE uk.uk_start_value < fk.%8$I '
+        '          AND uk.uk_end_value >= fk.%7$I '
+        '        HAVING min(uk.uk_start_value) <= fk.%7$I '
+        '           AND max(uk.uk_end_value) >= fk.%8$I '
+        '           AND array_agg(uk.x) FILTER (WHERE uk.x IS NOT NULL) IS NULL '
+        '    ) AND %10$s '
+        ')';
+
+BEGIN
+    SELECT fc.oid AS fk_table_oid,
+           fn.nspname AS fk_schema_name,
+           fc.relname AS fk_table_name,
+           fk.column_names AS fk_column_names,
+           fp.period_name AS fk_period_name,
+           fp.start_column_name AS fk_start_column_name,
+           fp.end_column_name AS fk_end_column_name,
+
+           uc.oid AS uk_table_oid,
+           un.nspname AS uk_schema_name,
+           uc.relname AS uk_table_name,
+           uk.column_names AS uk_column_names,
+           up.period_name AS uk_period_name,
+           up.start_column_name AS uk_start_column_name,
+           up.end_column_name AS uk_end_column_name,
+
+           fk.match_type,
+           fk.update_action,
+           fk.delete_action
+    INTO foreign_key_info
+    FROM periods.foreign_keys AS fk
+    JOIN periods.periods AS fp ON (fp.table_name, fp.period_name) = (fk.table_name, fk.period_name)
+    JOIN pg_catalog.pg_class AS fc ON fc.oid = fk.table_name
+    JOIN pg_catalog.pg_namespace AS fn ON fn.oid = fc.relnamespace
+    JOIN periods.unique_keys AS uk ON uk.key_name = fk.unique_key
+    JOIN periods.periods AS up ON (up.table_name, up.period_name) = (uk.table_name, uk.period_name)
+    JOIN pg_catalog.pg_class AS uc ON uc.oid = uk.table_name
+    JOIN pg_catalog.pg_namespace AS un ON un.oid = uc.relnamespace
+    WHERE fk.key_name = foreign_key_name;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'foreign key "%" not found', foreign_key_name;
+    END IF;
+
+    FOREACH column_name IN ARRAY foreign_key_info.uk_column_names LOOP
+        IF row_data->>column_name IS NULL THEN
+            /*
+             * If the deleted row had nulls in the referenced columns then
+             * there was no possible referencing row (until we implement
+             * PARTIAL) so we can just stop here.
+             */
+            RETURN true;
+        END IF;
+        uk_column_names := uk_column_names || ('t.' || quote_ident(column_name));
+        uk_column_values := uk_column_values || quote_literal(row_data->>column_name);
+    END LOOP;
+
+    IF is_update AND foreign_key_info.update_action = 'NO ACTION' THEN
+        EXECUTE format(QSQL, foreign_key_info.uk_schema_name,
+                             foreign_key_info.uk_table_name,
+                             array_to_string(uk_column_names, ', '),
+                             foreign_key_info.uk_start_column_name,
+                             foreign_key_info.uk_end_column_name,
+                             array_to_string(uk_column_values, ', '),
+                             row_data->>foreign_key_info.uk_start_column_name,
+                             row_data->>foreign_key_info.uk_end_column_name,
+                             'FOR KEY SHARE')
+        INTO still_matches;
+
+        IF still_matches THEN
+            RETURN true;
+        END IF;
+    END IF;
+
+    /*
+     * Otherwise, every child row referencing this key must still be fully
+     * covered by the remaining rows of the referenced table, so re-check the
+     * affected children with the same aggregated-coverage logic that is used
+     * for the child side, restricted to this key's values.  (The old code
+     * here looked only for a child whose period contained the entire old
+     * parent period, so children lying strictly inside it were silently
+     * orphaned; github issue #27.)
+     *
+     * For RESTRICT this still permits changes that leave every child covered:
+     * in this extension RESTRICT differs from NO ACTION only in the timing of
+     * the check, per the comments in uk_update_check()/uk_delete_check().
+     */
+    SELECT string_agg('fk.' || quote_ident(u.c), ', ' ORDER BY u.ordinality)
+    INTO fk_column_names
+    FROM unnest(foreign_key_info.fk_column_names) WITH ORDINALITY AS u (c, ordinality);
+
+    EXECUTE format(COVERAGE_SQL,
+                         foreign_key_info.uk_schema_name,
+                         foreign_key_info.uk_table_name,
+                         foreign_key_info.uk_start_column_name,
+                         foreign_key_info.uk_end_column_name,
+                         foreign_key_info.fk_schema_name,
+                         foreign_key_info.fk_table_name,
+                         foreign_key_info.fk_start_column_name,
+                         foreign_key_info.fk_end_column_name,
+                         (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
+                          FROM unnest(foreign_key_info.uk_column_names,
+                                      foreign_key_info.fk_column_names) AS u (ukc, fkc)),
+                         format('(%s) = (%s)', fk_column_names, array_to_string(uk_column_values, ', ')))
+    INTO violation;
+
+    IF violation THEN
+        RAISE EXCEPTION 'update or delete on table "%" violates foreign key constraint "%" on table "%"',
+            foreign_key_info.uk_table_oid::regclass,
+            foreign_key_name,
+            foreign_key_info.fk_table_oid::regclass
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+
+    RETURN true;
+END;
+$function$;
