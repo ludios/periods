@@ -37,3 +37,30 @@ SELECT val FROM dp_sysver_history;
 
 SELECT periods.drop_system_versioning('dp_sysver', drop_behavior => 'CASCADE', purge => true);
 DROP TABLE dp_sysver;
+
+/*
+ * §2.3(b): update_portion_of() must match the edited row by its primary key
+ * alone.  Matching on the columns of every constraint means a NULL in any
+ * CHECK/UNIQUE/FOREIGN KEY-constrained column makes the central UPDATE match
+ * nothing, while the pre/post slices are still inserted: the edit is silently
+ * lost and the periods overlap.
+ */
+
+CREATE TABLE fp_nullable (
+    id serial PRIMARY KEY,
+    val integer,
+    note text CHECK (note <> 'wrong'),
+    s integer,
+    e integer
+);
+SELECT periods.add_period('fp_nullable', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_nullable', 'p');
+INSERT INTO fp_nullable (val, note, s, e) VALUES (100, NULL, 10, 40);
+
+UPDATE fp_nullable__for_portion_of_p SET val = 999, s = 20, e = 30;
+
+/* Expect [10,20) val 100, [20,30) val 999, [30,40) val 100; note NULL in all. */
+SELECT id, val, note, s, e FROM fp_nullable ORDER BY s, e, id;
+
+SELECT periods.drop_period('fp_nullable', 'p');
+DROP TABLE fp_nullable;
