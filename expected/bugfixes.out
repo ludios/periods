@@ -1034,8 +1034,11 @@ SELECT periods.add_unique_key('t3_other', '{sys_s}', 'validity', key_name => 't3
 
 CREATE TABLE t3_victim (id integer PRIMARY KEY);
 SELECT periods.add_system_time_period('t3_victim', 'sys_s', 'sys_e');
-ERROR:  columns in period for SYSTEM_TIME are not allowed in UNIQUE keys
-CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 48 at RAISE
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
 /* A collision on the table itself must still be rejected */
 CREATE TABLE t3_self (sys_s timestamptz, vf integer, vt integer);
 SELECT periods.add_period('t3_self', 'validity', 'vf', 'vt');

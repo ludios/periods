@@ -1787,3 +1787,374 @@ BEGIN
     );
 END;
 $function$;
+
+/*
+ * The SYSTEM_TIME unique-key collision check consulted the unique keys of
+ * every table, so a temporal unique key on an unrelated table whose scalar
+ * columns shared the requested start/end column names blocked
+ * add_system_time_period() on a table it had nothing to do with.  Scope the
+ * check to the table getting the period.  Apart from that predicate (and
+ * OR REPLACE), the body is identical to the 1.2 original.
+ */
+CREATE OR REPLACE FUNCTION periods.add_system_time_period(
+    table_class regclass,
+    start_column_name name DEFAULT 'system_time_start',
+    end_column_name name DEFAULT 'system_time_end',
+    bounds_check_constraint name DEFAULT NULL,
+    infinity_check_constraint name DEFAULT NULL,
+    generated_always_trigger name DEFAULT NULL,
+    write_history_trigger name DEFAULT NULL,
+    truncate_trigger name DEFAULT NULL,
+    excluded_column_names name[] DEFAULT '{}')
+ RETURNS boolean
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    period_name CONSTANT name := 'system_time';
+
+    schema_name name;
+    table_name name;
+    kind "char";
+    persistence "char";
+    alter_commands text[] DEFAULT '{}';
+
+    start_attnum smallint;
+    start_type oid;
+    start_collation oid;
+    start_notnull boolean;
+
+    end_attnum smallint;
+    end_type oid;
+    end_collation oid;
+    end_notnull boolean;
+
+    excluded_column_name name;
+
+    DATE_OID CONSTANT integer := 1082;
+    TIMESTAMP_OID CONSTANT integer := 1114;
+    TIMESTAMPTZ_OID CONSTANT integer := 1184;
+    range_type regtype;
+BEGIN
+    IF table_class IS NULL THEN
+        RAISE EXCEPTION 'no table name specified';
+    END IF;
+
+    /* Always serialize operations on our catalogs */
+    PERFORM periods._serialize(table_class);
+
+    /*
+     * REFERENCES:
+     *     SQL:2016 4.15.2.2
+     *     SQL:2016 11.7
+     *     SQL:2016 11.27
+     */
+
+    /* The columns must not be part of UNIQUE keys. SQL:2016 11.7 SR 5)b) */
+    IF EXISTS (
+        SELECT FROM periods.unique_keys AS uk
+        WHERE uk.table_name = table_class AND uk.column_names && ARRAY[start_column_name, end_column_name])
+    THEN
+        RAISE EXCEPTION 'columns in period for SYSTEM_TIME are not allowed in UNIQUE keys';
+    END IF;
+
+    /* Must be a regular persistent base table. SQL:2016 11.27 SR 2 */
+
+    SELECT n.nspname, c.relname, c.relpersistence, c.relkind
+    INTO schema_name, table_name, persistence, kind
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE c.oid = table_class;
+
+    IF kind <> 'r' THEN
+        /*
+         * The main reason partitioned tables aren't supported yet is simply
+         * beceuase I haven't put any thought into it.
+         * Maybe it's trivial, maybe not.
+         */
+        IF kind = 'p' THEN
+            RAISE EXCEPTION 'partitioned tables are not supported yet';
+        END IF;
+
+        RAISE EXCEPTION 'relation % is not a table', $1;
+    END IF;
+
+    IF persistence <> 'p' THEN
+        /* We could probably accept unlogged tables but what's the point? */
+        RAISE EXCEPTION 'table "%" must be persistent', table_class;
+    END IF;
+
+    /*
+     * Check if period already exists.
+     *
+     * SQL:2016 11.27 SR 4.a
+     */
+    IF EXISTS (SELECT FROM periods.periods AS p WHERE (p.table_name, p.period_name) = (table_class, period_name)) THEN
+        RAISE EXCEPTION 'period for SYSTEM_TIME already exists on table "%"', table_class;
+    END IF;
+
+    /*
+     * Although we are not creating a new object, the SQL standard says that
+     * periods are in the same namespace as columns, so prevent that.
+     *
+     * SQL:2016 11.27 SR 4.b
+     */
+    IF EXISTS (SELECT FROM pg_catalog.pg_attribute AS a WHERE (a.attrelid, a.attname) = (table_class, period_name)) THEN
+        RAISE EXCEPTION 'a column named system_time already exists for table "%"', table_class;
+    END IF;
+
+    /* The standard says that the columns must not exist already, but we don't obey that rule for now. */
+
+    /* Get start column information */
+    SELECT a.attnum, a.atttypid, a.attnotnull
+    INTO start_attnum, start_type, start_notnull
+    FROM pg_catalog.pg_attribute AS a
+    WHERE (a.attrelid, a.attname) = (table_class, start_column_name);
+
+    IF NOT FOUND THEN
+       /*
+        * First add the column with DEFAULT of -infinity to fill the
+        * current rows, then replace the DEFAULT with transaction_timestamp() for future
+        * rows.
+        *
+        * The default value is just for self-documentation anyway because
+        * the trigger will enforce the value.
+        */
+        alter_commands := alter_commands || format('ADD COLUMN %I timestamp with time zone NOT NULL DEFAULT ''-infinity''', start_column_name);
+
+        start_attnum := 0;
+        start_type := 'timestamp with time zone'::regtype;
+        start_notnull := true;
+    END IF;
+    alter_commands := alter_commands || format('ALTER COLUMN %I SET DEFAULT transaction_timestamp()', start_column_name);
+
+    IF start_attnum < 0 THEN
+        RAISE EXCEPTION 'system columns cannot be used in periods';
+    END IF;
+
+    /* Get end column information */
+    SELECT a.attnum, a.atttypid, a.attnotnull
+    INTO end_attnum, end_type, end_notnull
+    FROM pg_catalog.pg_attribute AS a
+    WHERE (a.attrelid, a.attname) = (table_class, end_column_name);
+
+    IF NOT FOUND THEN
+        alter_commands := alter_commands || format('ADD COLUMN %I timestamp with time zone NOT NULL DEFAULT ''infinity''', end_column_name);
+
+        end_attnum := 0;
+        end_type := 'timestamp with time zone'::regtype;
+        end_notnull := true;
+    ELSE
+        alter_commands := alter_commands || format('ALTER COLUMN %I SET DEFAULT ''infinity''', end_column_name);
+    END IF;
+
+    IF end_attnum < 0 THEN
+        RAISE EXCEPTION 'system columns cannot be used in periods';
+    END IF;
+
+    /* Verify compatibility of start/end columns */
+    IF start_type::regtype NOT IN ('date', 'timestamp without time zone', 'timestamp with time zone') THEN
+        RAISE EXCEPTION 'SYSTEM_TIME periods must be of type "date", "timestamp without time zone", or "timestamp with time zone"';
+    END IF;
+    IF start_type <> end_type THEN
+        RAISE EXCEPTION 'start and end columns must be of same type';
+    END IF;
+
+    /* Get appropriate range type */
+    CASE start_type
+        WHEN DATE_OID THEN range_type := 'daterange';
+        WHEN TIMESTAMP_OID THEN range_type := 'tsrange';
+        WHEN TIMESTAMPTZ_OID THEN range_type := 'tstzrange';
+    ELSE
+        RAISE EXCEPTION 'unexpected data type: "%"', start_type::regtype;
+    END CASE;
+
+    /* can't be part of a foreign key */
+    IF EXISTS (
+        SELECT FROM periods.foreign_keys AS fk
+        WHERE fk.table_name = table_class
+          AND fk.column_names && ARRAY[start_column_name, end_column_name])
+    THEN
+        RAISE EXCEPTION 'columns for SYSTEM_TIME must not be part of foreign keys';
+    END IF;
+
+    /*
+     * Period columns must not be nullable.
+     */
+    IF NOT start_notnull THEN
+        alter_commands := alter_commands || format('ALTER COLUMN %I SET NOT NULL', start_column_name);
+    END IF;
+    IF NOT end_notnull THEN
+        alter_commands := alter_commands || format('ALTER COLUMN %I SET NOT NULL', end_column_name);
+    END IF;
+
+    /*
+     * Find and appropriate a CHECK constraint to make sure that start < end.
+     * Create one if necessary.
+     *
+     * SQL:2016 11.27 GR 2.b
+     */
+    DECLARE
+        condef CONSTANT text := format('CHECK ((%I < %I))', start_column_name, end_column_name);
+        context text;
+    BEGIN
+        IF bounds_check_constraint IS NOT NULL THEN
+            /* We were given a name, does it exist? */
+            SELECT pg_catalog.pg_get_constraintdef(c.oid)
+            INTO context
+            FROM pg_catalog.pg_constraint AS c
+            WHERE (c.conrelid, c.conname) = (table_class, bounds_check_constraint)
+              AND c.contype = 'c';
+
+            IF FOUND THEN
+                /* Does it match? */
+                IF context <> condef THEN
+                    RAISE EXCEPTION 'constraint "%" on table "%" does not match', bounds_check_constraint, table_class;
+                END IF;
+            ELSE
+                /* If it doesn't exist, we'll use the name for the one we create. */
+                alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', bounds_check_constraint, condef);
+            END IF;
+        ELSE
+            /* No name given, can we appropriate one? */
+            SELECT c.conname
+            INTO bounds_check_constraint
+            FROM pg_catalog.pg_constraint AS c
+            WHERE c.conrelid = table_class
+              AND c.contype = 'c'
+              AND pg_catalog.pg_get_constraintdef(c.oid) = condef;
+
+            /* Make our own then */
+            IF NOT FOUND THEN
+                SELECT c.relname
+                INTO table_name
+                FROM pg_catalog.pg_class AS c
+                WHERE c.oid = table_class;
+
+                bounds_check_constraint := periods._choose_name(ARRAY[table_name, period_name], 'check');
+                alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', bounds_check_constraint, condef);
+            END IF;
+        END IF;
+    END;
+
+    /*
+     * Find and appropriate a CHECK constraint to make sure that end = 'infinity'.
+     * Create one if necessary.
+     *
+     * SQL:2016 4.15.2.2
+     */
+    DECLARE
+        condef CONSTANT text := format('CHECK ((%I = ''infinity''::timestamp with time zone))', end_column_name);
+        context text;
+    BEGIN
+        IF infinity_check_constraint IS NOT NULL THEN
+            /* We were given a name, does it exist? */
+            SELECT pg_catalog.pg_get_constraintdef(c.oid)
+            INTO context
+            FROM pg_catalog.pg_constraint AS c
+            WHERE (c.conrelid, c.conname) = (table_class, infinity_check_constraint)
+              AND c.contype = 'c';
+
+            IF FOUND THEN
+                /* Does it match? */
+                IF context <> condef THEN
+                    RAISE EXCEPTION 'constraint "%" on table "%" does not match', infinity_check_constraint, table_class;
+                END IF;
+            ELSE
+                /* If it doesn't exist, we'll use the name for the one we create. */
+                alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', infinity_check_constraint, condef);
+            END IF;
+        ELSE
+            /* No name given, can we appropriate one? */
+            SELECT c.conname
+            INTO infinity_check_constraint
+            FROM pg_catalog.pg_constraint AS c
+            WHERE c.conrelid = table_class
+              AND c.contype = 'c'
+              AND pg_catalog.pg_get_constraintdef(c.oid) = condef;
+
+            /* Make our own then */
+            IF NOT FOUND THEN
+                SELECT c.relname
+                INTO table_name
+                FROM pg_catalog.pg_class AS c
+                WHERE c.oid = table_class;
+
+                infinity_check_constraint := periods._choose_name(ARRAY[table_name, end_column_name], 'infinity_check');
+                alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', infinity_check_constraint, condef);
+            END IF;
+        END IF;
+    END;
+
+    /* If we've created any work for ourselves, do it now */
+    IF alter_commands <> '{}' THEN
+        EXECUTE format('ALTER TABLE %I.%I %s', schema_name, table_name, array_to_string(alter_commands, ', '));
+
+        IF start_attnum = 0 THEN
+            SELECT a.attnum
+            INTO start_attnum
+            FROM pg_catalog.pg_attribute AS a
+            WHERE (a.attrelid, a.attname) = (table_class, start_column_name);
+        END IF;
+
+        IF end_attnum = 0 THEN
+            SELECT a.attnum
+            INTO end_attnum
+            FROM pg_catalog.pg_attribute AS a
+            WHERE (a.attrelid, a.attname) = (table_class, end_column_name);
+        END IF;
+    END IF;
+
+    /* Make sure all the excluded columns exist */
+    FOR excluded_column_name IN
+        SELECT u.name
+        FROM unnest(excluded_column_names) AS u (name)
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_attribute AS a
+            WHERE (a.attrelid, a.attname) = (table_class, u.name))
+    LOOP
+        RAISE EXCEPTION 'column "%" does not exist', excluded_column_name;
+    END LOOP;
+
+    /* Don't allow system columns to be excluded either */
+    FOR excluded_column_name IN
+        SELECT u.name
+        FROM unnest(excluded_column_names) AS u (name)
+        JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attname) = (table_class, u.name)
+        WHERE a.attnum < 0
+    LOOP
+        RAISE EXCEPTION 'cannot exclude system column "%"', excluded_column_name;
+    END LOOP;
+
+    generated_always_trigger := coalesce(
+        generated_always_trigger,
+        periods._choose_name(ARRAY[table_name], 'system_time_generated_always'));
+    EXECUTE format('CREATE TRIGGER %I BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE PROCEDURE periods.generated_always_as_row_start_end()', generated_always_trigger, table_class);
+
+    write_history_trigger := coalesce(
+        write_history_trigger,
+        periods._choose_name(ARRAY[table_name], 'system_time_write_history'));
+    EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE PROCEDURE periods.write_history()', write_history_trigger, table_class);
+
+    truncate_trigger := coalesce(
+        truncate_trigger,
+        periods._choose_name(ARRAY[table_name], 'truncate'));
+    EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE PROCEDURE periods.truncate_system_versioning()', truncate_trigger, table_class);
+
+    INSERT INTO periods.periods (table_name, period_name, start_column_name, end_column_name, range_type, bounds_check_constraint)
+    VALUES (table_class, period_name, start_column_name, end_column_name, range_type, bounds_check_constraint);
+
+    INSERT INTO periods.system_time_periods (
+        table_name, period_name, infinity_check_constraint,
+        generated_always_trigger, write_history_trigger, truncate_trigger,
+        excluded_column_names)
+    VALUES (
+        table_class, period_name, infinity_check_constraint,
+        generated_always_trigger, write_history_trigger, truncate_trigger,
+        excluded_column_names);
+
+    RETURN true;
+END;
+$function$;
