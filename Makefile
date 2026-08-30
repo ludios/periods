@@ -7,10 +7,9 @@ DATA = periods--1.0.sql \
 	   periods--1.1.sql \
 	   periods--1.1--1.2.sql \
 	   periods--1.2.sql \
-	   periods--1.2--1.2.4.sql \
-	   periods--1.2.4.sql
+	   periods--1.2--1.2.4.sql
 
-EXTRA_CLEAN = periods--1.2.4.sql
+DATA_built = periods--1.2.4.sql
 
 REGRESS = install \
 		  periods \
@@ -38,6 +37,3 @@ include $(PGXS)
 # CREATE EXTENSION.  The later CREATE OR REPLACEs override the 1.2 bodies.
 periods--1.2.4.sql: periods--1.2.sql periods--1.2--1.2.4.sql
 	cat $^ > $@
-
-all: periods--1.2.4.sql
-install: periods--1.2.4.sql

@@ -582,7 +582,9 @@ insert_into_history(Relation history_rel, HeapTuple history_tuple)
 		 * that erroring out above cannot leave a freed plan in the cache.
 		 */
 		if (hentry->qplan != NULL)
+		{
 			SPI_freeplan(hentry->qplan);
+		}
 
 		strlcpy(hentry->schemaname, schemaname, sizeof(hentry->schemaname));
 		strlcpy(hentry->tablename, tablename, sizeof(hentry->tablename));
