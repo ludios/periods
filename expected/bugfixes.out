@@ -1387,16 +1387,13 @@ SELECT periods.add_system_time_period('d6');
 
 CREATE VIEW d6_history AS SELECT * FROM d6;
 SELECT periods.add_system_versioning('d6');
-ERROR:  base table "d6" and history table "d6_history" are not compatible
-CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 126 at RAISE
+ERROR:  history relation "d6_history" must be a regular table
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 101 at RAISE
 DROP VIEW d6_history;
 CREATE MATERIALIZED VIEW d6_history AS SELECT * FROM d6;
 SELECT periods.add_system_versioning('d6');
-ERROR:  syntax error at or near "d6_history"
-LINE 1: REVOKE ALL ON ERROR d6_history FROM periods_unprivileged_use...
-                            ^
-QUERY:  REVOKE ALL ON ERROR d6_history FROM periods_unprivileged_user
-CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 270 at EXECUTE
+ERROR:  history relation "d6_history" must be a regular table
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 101 at RAISE
 DROP MATERIALIZED VIEW d6_history;
 /* Adopting a legitimate pre-existing plain table must keep working */
 CREATE TABLE d6_history (LIKE d6);

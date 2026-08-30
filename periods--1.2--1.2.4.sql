@@ -1509,6 +1509,7 @@ DECLARE
     kind "char";
     period_row periods.periods;
     history_table_id oid;
+    history_kind "char";
     sql text;
     grantees text;
 BEGIN
@@ -1583,19 +1584,24 @@ BEGIN
      * Create the history table.  If it already exists we check that all the
      * columns match but otherwise we trust the user.  Perhaps the history
      * table was disconnected in order to change the schema (a case which is
-     * not defined by the SQL standard).  Or perhaps the user wanted to
-     * partition the history table.
+     * not defined by the SQL standard).  Only regular tables can serve as
+     * history tables for now; the rest of the machinery (privilege and
+     * ownership maintenance, in particular) only handles those.
      *
      * There shouldn't be any concurrency issues here because our main catalog
      * is locked.
      */
-    SELECT c.oid
-    INTO history_table_id
+    SELECT c.oid, c.relkind
+    INTO history_table_id, history_kind
     FROM pg_catalog.pg_class AS c
     JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
     WHERE (n.nspname, c.relname) = (schema_name, history_table_name);
 
     IF FOUND THEN
+        IF history_kind <> 'r' THEN
+            RAISE EXCEPTION 'history relation "%" must be a regular table', history_table_id::regclass;
+        END IF;
+
         /* Don't allow any periods on the history table (this might be relaxed later) */
         IF EXISTS (SELECT FROM periods.periods AS p WHERE p.table_name = history_table_id) THEN
             RAISE EXCEPTION 'history tables for SYSTEM VERSIONING cannot have periods';
