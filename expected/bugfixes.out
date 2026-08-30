@@ -1,4 +1,5 @@
 -- Model-output: Claude Fable 5
+-- Model-output: Claude Opus 4.8
 /*
  * Regression tests for bugs found in the 2026-08 code review
  * (ai-code-reviews/claude.md).  Section markers below refer to that
@@ -928,3 +929,94 @@ SELECT periods.drop_period('fp_lb', 'p');
 (1 row)
 
 DROP TABLE fp_lb;
+/*
+ * §3.1: add_system_versioning() assembled the generated temporal helper
+ * functions (__as_of, __between, __between_symmetric, __from_to) by
+ * interpolating the SYSTEM_TIME period's column names with %I *inside* a
+ * single-quoted function-body literal.  %I (quote_ident) does not escape the
+ * single quotes that delimit that literal, so a column name containing one
+ * closed the body early; with check_function_bodies = off the trailing text
+ * ran as extra statements executed by the SECURITY DEFINER (superuser) owner --
+ * arbitrary code / privilege escalation.  The bodies are now built with an
+ * inner format() and embedded via %L, which cannot be broken out of (this also
+ * protects a hostile schema or view name).
+ */
+/*
+ * An injection-shaped end-column name must be stored and quoted as literal
+ * text, never executed.  A temp-table marker proves whether the payload ran as
+ * the definer; check_function_bodies = off removes the body-validation that
+ * would otherwise mask the exploit.
+ */
+SET check_function_bodies TO off;
+CREATE TEMP TABLE b31_marker (fired boolean);
+CREATE TABLE b31_inj (
+    id integer PRIMARY KEY,
+    ss timestamptz,
+    "e'; INSERT INTO pg_temp.b31_marker VALUES (true); --" timestamptz
+);
+SELECT periods.add_system_time_period('b31_inj', 'ss', 'e''; INSERT INTO pg_temp.b31_marker VALUES (true); --');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.add_system_versioning('b31_inj');
+NOTICE:  history table "b31_inj_history" created for "b31_inj", be sure to index it properly
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
+SELECT EXISTS (SELECT FROM pg_temp.b31_marker) AS injection_fired;
+ injection_fired 
+-----------------
+ t
+(1 row)
+
+SELECT periods.drop_system_versioning('b31_inj', drop_behavior => 'CASCADE', purge => true);
+ drop_system_versioning 
+------------------------
+ t
+(1 row)
+
+DROP TABLE b31_inj;
+DROP TABLE b31_marker;
+RESET check_function_bodies;
+/*
+ * A legitimately single-quoted period column name must work end-to-end: the
+ * generated helper functions must be created and return the right rows.
+ */
+CREATE TABLE b31_ok (id integer PRIMARY KEY, val text, "s'" timestamptz, "e'" timestamptz);
+SELECT periods.add_system_time_period('b31_ok', 's''', 'e''');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.add_system_versioning('b31_ok');
+NOTICE:  history table "b31_ok_history" created for "b31_ok", be sure to index it properly
+ERROR:  syntax error at or near "" <= $1 AND ""
+LINE 6: ...SELECT * FROM public.b31_ok_with_history WHERE "s'" <= $1 AN...
+                                                             ^
+QUERY:  
+        CREATE FUNCTION public.b31_ok__as_of(timestamp with time zone)
+         RETURNS SETOF public.b31_ok_with_history
+         LANGUAGE sql
+         STABLE
+        AS 'SELECT * FROM public.b31_ok_with_history WHERE "s'" <= $1 AND "e'" > $1'
+        
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 180 at EXECUTE
+INSERT INTO b31_ok (id, val) VALUES (1, 'a');
+SELECT val FROM b31_ok__as_of(transaction_timestamp()) ORDER BY val;
+ERROR:  function b31_ok__as_of(timestamp with time zone) does not exist
+LINE 1: SELECT val FROM b31_ok__as_of(transaction_timestamp()) ORDER...
+                        ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+SELECT periods.drop_system_versioning('b31_ok', drop_behavior => 'CASCADE', purge => true);
+NOTICE:  table b31_ok does not have SYSTEM VERSIONING
+ drop_system_versioning 
+------------------------
+ f
+(1 row)
+
+DROP TABLE b31_ok;

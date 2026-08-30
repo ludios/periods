@@ -1,4 +1,5 @@
 -- Model-output: Claude Fable 5
+-- Model-output: Claude Opus 4.8
 /*
  * Regression tests for bugs found in the 2026-08 code review
  * (ai-code-reviews/claude.md).  Section markers below refer to that
@@ -407,3 +408,49 @@ UPDATE fp_lb__for_portion_of_p SET val = 999, s = 20, e = 30;
 SELECT id, val, tags, array_dims(tags) AS dims, s, e FROM fp_lb ORDER BY s;
 SELECT periods.drop_period('fp_lb', 'p');
 DROP TABLE fp_lb;
+
+/*
+ * §3.1: add_system_versioning() assembled the generated temporal helper
+ * functions (__as_of, __between, __between_symmetric, __from_to) by
+ * interpolating the SYSTEM_TIME period's column names with %I *inside* a
+ * single-quoted function-body literal.  %I (quote_ident) does not escape the
+ * single quotes that delimit that literal, so a column name containing one
+ * closed the body early; with check_function_bodies = off the trailing text
+ * ran as extra statements executed by the SECURITY DEFINER (superuser) owner --
+ * arbitrary code / privilege escalation.  The bodies are now built with an
+ * inner format() and embedded via %L, which cannot be broken out of (this also
+ * protects a hostile schema or view name).
+ */
+
+/*
+ * An injection-shaped end-column name must be stored and quoted as literal
+ * text, never executed.  A temp-table marker proves whether the payload ran as
+ * the definer; check_function_bodies = off removes the body-validation that
+ * would otherwise mask the exploit.
+ */
+SET check_function_bodies TO off;
+CREATE TEMP TABLE b31_marker (fired boolean);
+CREATE TABLE b31_inj (
+    id integer PRIMARY KEY,
+    ss timestamptz,
+    "e'; INSERT INTO pg_temp.b31_marker VALUES (true); --" timestamptz
+);
+SELECT periods.add_system_time_period('b31_inj', 'ss', 'e''; INSERT INTO pg_temp.b31_marker VALUES (true); --');
+SELECT periods.add_system_versioning('b31_inj');
+SELECT EXISTS (SELECT FROM pg_temp.b31_marker) AS injection_fired;
+SELECT periods.drop_system_versioning('b31_inj', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE b31_inj;
+DROP TABLE b31_marker;
+RESET check_function_bodies;
+
+/*
+ * A legitimately single-quoted period column name must work end-to-end: the
+ * generated helper functions must be created and return the right rows.
+ */
+CREATE TABLE b31_ok (id integer PRIMARY KEY, val text, "s'" timestamptz, "e'" timestamptz);
+SELECT periods.add_system_time_period('b31_ok', 's''', 'e''');
+SELECT periods.add_system_versioning('b31_ok');
+INSERT INTO b31_ok (id, val) VALUES (1, 'a');
+SELECT val FROM b31_ok__as_of(transaction_timestamp()) ORDER BY val;
+SELECT periods.drop_system_versioning('b31_ok', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE b31_ok;
