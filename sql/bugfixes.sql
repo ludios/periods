@@ -640,3 +640,20 @@ CREATE TABLE d6_history (LIKE d6);
 SELECT periods.add_system_versioning('d6');
 SELECT periods.drop_system_versioning('d6', drop_behavior => 'CASCADE', purge => true);
 DROP TABLE d6;
+
+/*
+ * sol.md H2: add_period(..., 'system_time') silently discarded its
+ * range_type and bounds_check_constraint arguments instead of applying or
+ * rejecting them.
+ */
+
+CREATE TABLE h2 (id integer PRIMARY KEY);
+SELECT periods.add_period('h2', 'system_time', 'sts', 'ste',
+                          bounds_check_constraint => 'h2_custom_bounds');
+SELECT p.period_name, p.bounds_check_constraint
+FROM periods.periods AS p
+WHERE p.table_name = 'h2'::regclass;
+SELECT periods.drop_system_time_period('h2', purge => true);
+SELECT periods.add_period('h2', 'system_time', 'sts', 'ste', range_type => 'tstzrange');
+SELECT periods.drop_system_time_period('h2', purge => true);
+DROP TABLE h2;

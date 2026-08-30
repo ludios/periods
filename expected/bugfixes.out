@@ -1410,3 +1410,43 @@ SELECT periods.drop_system_versioning('d6', drop_behavior => 'CASCADE', purge =>
 (1 row)
 
 DROP TABLE d6;
+/*
+ * sol.md H2: add_period(..., 'system_time') silently discarded its
+ * range_type and bounds_check_constraint arguments instead of applying or
+ * rejecting them.
+ */
+CREATE TABLE h2 (id integer PRIMARY KEY);
+SELECT periods.add_period('h2', 'system_time', 'sts', 'ste',
+                          bounds_check_constraint => 'h2_custom_bounds');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT p.period_name, p.bounds_check_constraint
+FROM periods.periods AS p
+WHERE p.table_name = 'h2'::regclass;
+ period_name | bounds_check_constraint 
+-------------+-------------------------
+ system_time | h2_system_time_check
+(1 row)
+
+SELECT periods.drop_system_time_period('h2', purge => true);
+ drop_system_time_period 
+-------------------------
+ t
+(1 row)
+
+SELECT periods.add_period('h2', 'system_time', 'sts', 'ste', range_type => 'tstzrange');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.drop_system_time_period('h2', purge => true);
+ drop_system_time_period 
+-------------------------
+ t
+(1 row)
+
+DROP TABLE h2;
