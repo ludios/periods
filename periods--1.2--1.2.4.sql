@@ -77,12 +77,19 @@ $function$;
 
 /*
  * The text of a period's bounds check, spelled the way pg_get_constraintdef()
- * will render it back.  The comparison operator is the "less than" of the range
- * type's own subtype operator family, and it is written schema-qualified when
- * the search_path in effect does not make it visible — which, inside our pinned
- * SECURITY DEFINER functions, is the case for every operator outside
- * pg_catalog.  Without that, a range type over a user-defined subtype could not
- * get a period at all.
+ * will render it back.  The comparison is the "<" of the range type's own
+ * subtype operator family, written schema-qualified when the search_path in
+ * effect does not make it visible — which, inside our pinned SECURITY DEFINER
+ * functions, is the case for every operator outside pg_catalog.  Without that,
+ * a range type over a user-defined subtype could not get a period at all.
+ *
+ * The family is entered by the opclass's own input type rather than by the
+ * range's subtype: a range over a domain is served by the base type's opclass,
+ * and the two names differ.  Anything the lookup does not resolve to an
+ * operator actually spelled "<" — a family whose ordering operator is named
+ * something else, such as text_pattern_ops' "~<~" — falls back to the bare "<"
+ * this has always emitted, rather than quietly changing what the constraint
+ * means.
  *
  * add_period() creates the constraint from this and rename_following()
  * re-discovers a renamed one by comparing against it, so the two must agree;
@@ -95,21 +102,25 @@ CREATE FUNCTION periods._bounds_check_def(range_type regtype, start_column_name 
  SET search_path TO pg_catalog, pg_temp
 AS
 $function$
-SELECT pg_catalog.format('CHECK ((%I %s %I))',
-           start_column_name,
-           CASE WHEN pg_catalog.pg_operator_is_visible(o.oid)
-                THEN o.oprname::text
-                ELSE pg_catalog.format('OPERATOR(%I.%s)', n.nspname, o.oprname)
-           END,
-           end_column_name)
-FROM pg_catalog.pg_range AS r
-JOIN pg_catalog.pg_opclass AS oc ON oc.oid = r.rngsubopc
-JOIN pg_catalog.pg_amop AS ao
-        ON (ao.amopfamily, ao.amoplefttype, ao.amoprighttype, ao.amopstrategy)
-         = (oc.opcfamily, r.rngsubtype, r.rngsubtype, 1)
-JOIN pg_catalog.pg_operator AS o ON o.oid = ao.amopopr
-JOIN pg_catalog.pg_namespace AS n ON n.oid = o.oprnamespace
-WHERE r.rngtypid = range_type;
+/* coalesce() is grammar, not a function: it cannot be captured, or qualified. */
+SELECT coalesce(
+    (SELECT pg_catalog.format('CHECK ((%I %s %I))',
+                start_column_name,
+                CASE WHEN pg_catalog.pg_operator_is_visible(o.oid)
+                     THEN o.oprname::text
+                     ELSE pg_catalog.format('OPERATOR(%I.%s)', n.nspname, o.oprname)
+                END,
+                end_column_name)
+     FROM pg_catalog.pg_range AS r
+     JOIN pg_catalog.pg_opclass AS oc ON oc.oid = r.rngsubopc
+     JOIN pg_catalog.pg_amop AS ao
+             ON (ao.amopfamily, ao.amoplefttype, ao.amoprighttype, ao.amopstrategy)
+              = (oc.opcfamily, oc.opcintype, oc.opcintype, 1)
+     JOIN pg_catalog.pg_operator AS o ON o.oid = ao.amopopr
+     JOIN pg_catalog.pg_namespace AS n ON n.oid = o.oprnamespace
+     WHERE r.rngtypid = range_type
+       AND o.oprname = '<'),
+    pg_catalog.format('CHECK ((%I < %I))', start_column_name, end_column_name));
 $function$;
 
 
@@ -142,7 +153,7 @@ BEGIN
         RAISE EXCEPTION 'no period name specified';
     END IF;
 
-    /* Always serialize operations on our catalogs */
+    /* Authorize and serialize this periods DDL operation */
     PERFORM periods._serialize(table_name);
 
     /*
@@ -1675,7 +1686,7 @@ BEGIN
         RAISE EXCEPTION 'no table name specified';
     END IF;
 
-    /* Always serialize operations on our catalogs */
+    /* Authorize and serialize this periods DDL operation */
     PERFORM periods._serialize(table_class);
 
     /*
@@ -2475,7 +2486,7 @@ BEGIN
         RAISE EXCEPTION 'no table name specified';
     END IF;
 
-    /* Always serialize operations on our catalogs */
+    /* Authorize and serialize this periods DDL operation */
     PERFORM periods._serialize(table_name);
 
     SELECT p.*
@@ -3062,7 +3073,7 @@ BEGIN
         RAISE EXCEPTION 'delete_action % is not implemented', delete_action;
     END IF;
 
-    /* Always serialize operations on our catalogs */
+    /* Authorize and serialize this periods DDL operation */
     PERFORM periods._serialize(table_name);
 
     /* Get the period involved */
@@ -3247,7 +3258,7 @@ BEGIN
         RAISE EXCEPTION 'no table or key name specified';
     END IF;
 
-    /* Always serialize operations on our catalogs */
+    /* Authorize and serialize this periods DDL operation */
     PERFORM periods._serialize(table_name);
 
     FOR foreign_key_row IN
@@ -3376,7 +3387,7 @@ BEGIN
         RAISE EXCEPTION 'no period name specified';
     END IF;
 
-    /* Always serialize operations on our catalogs */
+    /* Authorize and serialize this periods DDL operation */
     PERFORM periods._serialize(table_name);
 
     /*
@@ -3627,7 +3638,7 @@ BEGIN
         RAISE EXCEPTION 'cannot specify period name without table name';
     END IF;
 
-    /* Always serialize operations on our catalogs */
+    /* Authorize and serialize this periods DDL operation */
     PERFORM periods._serialize(table_name);
 
     /*

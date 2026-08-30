@@ -1640,11 +1640,11 @@ DROP TABLE fp_datep;
 CREATE TYPE bugfix_intarrrange AS RANGE (subtype = integer[]);
 CREATE TABLE fp_arrp (id integer, val text, s integer[], e integer[], PRIMARY KEY (id, s, e));
 SELECT periods.add_period('fp_arrp', 'p', 's', 'e');
-ERROR:  syntax error at end of input
-LINE 1: ALTER TABLE public.fp_arrp ADD CONSTRAINT fp_arrp_p_check 
-                                                                  ^
-QUERY:  ALTER TABLE public.fp_arrp ADD CONSTRAINT fp_arrp_p_check 
-CONTEXT:  PL/pgSQL function periods.add_period(regclass,name,name,name,regtype,name) line 238 at EXECUTE
+ add_period 
+------------
+ t
+(1 row)
+
 SELECT periods.add_for_portion_view('fp_arrp', 'p');
  add_for_portion_view 
 ----------------------
@@ -1654,7 +1654,7 @@ SELECT periods.add_for_portion_view('fp_arrp', 'p');
 INSERT INTO fp_arrp VALUES (1, 'a', '{1}', '{9}');
 \set VERBOSITY terse
 UPDATE fp_arrp__for_portion_of_p SET val = 'b', s = '{3}', e = '{6}';
-ERROR:  relation "fp_arrp__for_portion_of_p" does not exist at character 8
+ERROR:  malformed array literal: "[1]" at character 14
 \set VERBOSITY default
 SELECT id, val, s, e FROM fp_arrp ORDER BY s;
  id | val |  s  |  e  
@@ -1669,10 +1669,9 @@ SELECT periods.drop_for_portion_view('fp_arrp', 'p');
 (1 row)
 
 SELECT periods.drop_period('fp_arrp', 'p');
-NOTICE:  period p not found on table public.fp_arrp
  drop_period 
 -------------
- f
+ t
 (1 row)
 
 DROP TABLE fp_arrp;
@@ -2288,6 +2287,40 @@ SELECT periods.drop_period('b33mt', 'p', purge => true);
 (1 row)
 
 DROP TABLE b33mt;
+/*
+ * A range over a domain is served by the *base* type's opclass, so the operator
+ * has to be looked up by the opclass's own input type; and a family whose
+ * ordering operator is not spelled "<" (text_pattern_ops' "~<~") must keep the
+ * bare "<" this has always emitted rather than quietly changing the constraint.
+ */
+CREATE DOMAIN b33_dint AS integer;
+CREATE TYPE b33_dintrange AS RANGE (SUBTYPE = b33_dint);
+CREATE TYPE b33_tprange AS RANGE (SUBTYPE = text, SUBTYPE_OPCLASS = text_pattern_ops);
+SELECT periods._bounds_check_def('b33_dintrange'::regtype, 's', 'e') AS over_domain,
+       periods._bounds_check_def('b33_tprange'::regtype, 's', 'e') AS text_pattern,
+       periods._bounds_check_def('daterange'::regtype, 's', 'e') AS builtin;
+   over_domain   |  text_pattern   |     builtin     
+-----------------+-----------------+-----------------
+ CHECK ((s < e)) | CHECK ((s < e)) | CHECK ((s < e))
+(1 row)
+
+CREATE TABLE b33_dt (id integer, s b33_dint NOT NULL, e b33_dint NOT NULL);
+SELECT periods.add_period('b33_dt', 'p', 's', 'e', 'b33_dintrange');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.drop_period('b33_dt', 'p', purge => true);
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE b33_dt;
+DROP TYPE b33_tprange;
+DROP TYPE b33_dintrange;
+DROP DOMAIN b33_dint;
 RESET ROLE;
 /* the cascade list is long and its order is not ours to depend on */
 SET client_min_messages TO warning;

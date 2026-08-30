@@ -1113,6 +1113,27 @@ SELECT bounds_check_constraint FROM periods.periods WHERE table_name = 'b33mt'::
 
 SELECT periods.drop_period('b33mt', 'p', purge => true);
 DROP TABLE b33mt;
+
+/*
+ * A range over a domain is served by the *base* type's opclass, so the operator
+ * has to be looked up by the opclass's own input type; and a family whose
+ * ordering operator is not spelled "<" (text_pattern_ops' "~<~") must keep the
+ * bare "<" this has always emitted rather than quietly changing the constraint.
+ */
+CREATE DOMAIN b33_dint AS integer;
+CREATE TYPE b33_dintrange AS RANGE (SUBTYPE = b33_dint);
+CREATE TYPE b33_tprange AS RANGE (SUBTYPE = text, SUBTYPE_OPCLASS = text_pattern_ops);
+SELECT periods._bounds_check_def('b33_dintrange'::regtype, 's', 'e') AS over_domain,
+       periods._bounds_check_def('b33_tprange'::regtype, 's', 'e') AS text_pattern,
+       periods._bounds_check_def('daterange'::regtype, 's', 'e') AS builtin;
+CREATE TABLE b33_dt (id integer, s b33_dint NOT NULL, e b33_dint NOT NULL);
+SELECT periods.add_period('b33_dt', 'p', 's', 'e', 'b33_dintrange');
+SELECT periods.drop_period('b33_dt', 'p', purge => true);
+DROP TABLE b33_dt;
+DROP TYPE b33_tprange;
+DROP TYPE b33_dintrange;
+DROP DOMAIN b33_dint;
+
 RESET ROLE;
 /* the cascade list is long and its order is not ours to depend on */
 SET client_min_messages TO warning;
