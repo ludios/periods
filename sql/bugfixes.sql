@@ -282,3 +282,29 @@ INSERT INTO nn VALUES (1, NULL, 10);
 SELECT id, s, e FROM nn ORDER BY id;
 SELECT periods.drop_period('nn', 'p');
 DROP TABLE nn;
+
+/*
+ * §6.1: truncate_system_versioning() read the history table's regclass into a
+ * name-typed variable, truncating the qualified form at 63 bytes, so history
+ * tables whose schema-qualified name is longer could not be truncated.
+ */
+
+RESET ROLE;
+CREATE SCHEMA history_schema_with_quite_a_long_name_indeed;
+CREATE TABLE trunc_sv (id integer PRIMARY KEY, val integer);
+SELECT periods.add_system_time_period('trunc_sv');
+SELECT periods.add_system_versioning('trunc_sv');
+ALTER TABLE trunc_sv_history SET SCHEMA history_schema_with_quite_a_long_name_indeed;
+ALTER TABLE history_schema_with_quite_a_long_name_indeed.trunc_sv_history
+    RENAME TO history_table_with_quite_a_long_name_as_well;
+INSERT INTO trunc_sv (id, val) VALUES (1, 10);
+UPDATE trunc_sv SET val = 20;
+SELECT count(*) AS history_rows_before
+    FROM history_schema_with_quite_a_long_name_indeed.history_table_with_quite_a_long_name_as_well;
+TRUNCATE trunc_sv;
+SELECT count(*) AS history_rows_after
+    FROM history_schema_with_quite_a_long_name_indeed.history_table_with_quite_a_long_name_as_well;
+SELECT periods.drop_system_versioning('trunc_sv', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE trunc_sv;
+DROP SCHEMA history_schema_with_quite_a_long_name_indeed;
+SET ROLE TO periods_unprivileged_user;

@@ -625,3 +625,56 @@ SELECT periods.drop_period('nn', 'p');
 (1 row)
 
 DROP TABLE nn;
+/*
+ * §6.1: truncate_system_versioning() read the history table's regclass into a
+ * name-typed variable, truncating the qualified form at 63 bytes, so history
+ * tables whose schema-qualified name is longer could not be truncated.
+ */
+RESET ROLE;
+CREATE SCHEMA history_schema_with_quite_a_long_name_indeed;
+CREATE TABLE trunc_sv (id integer PRIMARY KEY, val integer);
+SELECT periods.add_system_time_period('trunc_sv');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.add_system_versioning('trunc_sv');
+NOTICE:  history table "trunc_sv_history" created for "trunc_sv", be sure to index it properly
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
+ALTER TABLE trunc_sv_history SET SCHEMA history_schema_with_quite_a_long_name_indeed;
+ALTER TABLE history_schema_with_quite_a_long_name_indeed.trunc_sv_history
+    RENAME TO history_table_with_quite_a_long_name_as_well;
+INSERT INTO trunc_sv (id, val) VALUES (1, 10);
+UPDATE trunc_sv SET val = 20;
+SELECT count(*) AS history_rows_before
+    FROM history_schema_with_quite_a_long_name_indeed.history_table_with_quite_a_long_name_as_well;
+ history_rows_before 
+---------------------
+                   1
+(1 row)
+
+TRUNCATE trunc_sv;
+ERROR:  relation "history_schema_with_quite_a_long_name_indeed.history_table_with" does not exist
+CONTEXT:  SQL statement "TRUNCATE history_schema_with_quite_a_long_name_indeed.history_table_with"
+PL/pgSQL function periods.truncate_system_versioning() line 12 at EXECUTE
+SELECT count(*) AS history_rows_after
+    FROM history_schema_with_quite_a_long_name_indeed.history_table_with_quite_a_long_name_as_well;
+ history_rows_after 
+--------------------
+                  1
+(1 row)
+
+SELECT periods.drop_system_versioning('trunc_sv', drop_behavior => 'CASCADE', purge => true);
+ drop_system_versioning 
+------------------------
+ t
+(1 row)
+
+DROP TABLE trunc_sv;
+DROP SCHEMA history_schema_with_quite_a_long_name_indeed;
+SET ROLE TO periods_unprivileged_user;
