@@ -228,3 +228,42 @@ SELECT periods.drop_period('sn_child', 'p', 'CASCADE');
 DROP TABLE sn_child;
 SELECT periods.drop_period('sn_parent', 'p', 'CASCADE');
 DROP TABLE sn_parent;
+
+/*
+ * §5.2: the bounds check constraint of a period must be protected from being
+ * dropped (like the system_time infinity constraint already is), and
+ * drop_period(..., purge => true) must not trip over its own protection, a
+ * recursive teardown, or a constraint shared by another period.
+ */
+
+CREATE TABLE bcp (id integer, s integer, e integer);
+SELECT periods.add_period('bcp', 'p', 's', 'e');
+/* Dropping the bounds constraint out from under the period must be blocked. */
+ALTER TABLE bcp DROP CONSTRAINT bcp_p_check;
+/* And purging the period must work. */
+SELECT periods.drop_period('bcp', 'p', purge => true);
+DROP TABLE bcp;
+
+/* CASCADE+purge of system_time with versioning tears down through
+ * drop_system_versioning, which recurses into drop_period; the bounds
+ * constraint must not be dropped twice. */
+CREATE TABLE dtd (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('dtd');
+SELECT periods.add_system_versioning('dtd');
+SELECT periods.drop_period('dtd', 'system_time', 'CASCADE', purge => true);
+SELECT periods.drop_system_versioning('dtd', drop_behavior => 'CASCADE', purge => true);
+SELECT periods.drop_period('dtd', 'system_time', purge => true);
+DROP TABLE dtd;
+
+/* Two periods adopting the same pre-existing CHECK constraint: purging one
+ * period must leave the constraint for the other. */
+CREATE TABLE shc (id integer, s integer, e integer, CONSTRAINT shc_se_check CHECK (s < e));
+SELECT periods.add_period('shc', 'p1', 's', 'e');
+SELECT periods.add_period('shc', 'p2', 's', 'e');
+SELECT periods.drop_period('shc', 'p1', purge => true);
+SELECT count(*) AS constraint_survives FROM pg_catalog.pg_constraint
+    WHERE (conrelid, conname) = ('shc'::regclass, 'shc_se_check');
+SELECT periods.drop_period('shc', 'p2', purge => true);
+SELECT count(*) AS constraint_purged FROM pg_catalog.pg_constraint
+    WHERE (conrelid, conname) = ('shc'::regclass, 'shc_se_check');
+DROP TABLE shc;
