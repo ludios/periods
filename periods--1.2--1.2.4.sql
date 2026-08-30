@@ -1207,24 +1207,24 @@ BEGIN
             END,
             ht.oid::regclass, t.relowner::regrole)
         FROM periods.system_versioning AS sv
-        JOIN pg_class AS t ON t.oid = sv.table_name
-        JOIN pg_class AS ht ON ht.oid IN (sv.history_table_name, sv.view_name)
+        JOIN pg_catalog.pg_class AS t ON t.oid = sv.table_name
+        JOIN pg_catalog.pg_class AS ht ON ht.oid IN (sv.history_table_name, sv.view_name)
         WHERE t.relowner <> ht.relowner
 
         UNION ALL
 
         SELECT format('ALTER VIEW %s OWNER TO %s', fpt.oid::regclass, t.relowner::regrole)
         FROM periods.for_portion_views AS fpv
-        JOIN pg_class AS t ON t.oid = fpv.table_name
-        JOIN pg_class AS fpt ON fpt.oid = fpv.view_name
+        JOIN pg_catalog.pg_class AS t ON t.oid = fpv.table_name
+        JOIN pg_catalog.pg_class AS fpt ON fpt.oid = fpv.view_name
         WHERE t.relowner <> fpt.relowner
 
         UNION ALL
 
         SELECT format('ALTER FUNCTION %s OWNER TO %s', p.oid::regprocedure, t.relowner::regrole)
         FROM periods.system_versioning AS sv
-        JOIN pg_class AS t ON t.oid = sv.table_name
-        JOIN pg_proc AS p ON p.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
+        JOIN pg_catalog.pg_class AS t ON t.oid = sv.table_name
+        JOIN pg_catalog.pg_proc AS p ON p.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
         WHERE t.relowner <> p.proowner
     LOOP
         EXECUTE cmd;
@@ -1239,7 +1239,7 @@ BEGIN
             SELECT *,
                    EXISTS (
                        SELECT
-                       FROM pg_class AS _c
+                       FROM pg_catalog.pg_class AS _c
                        CROSS JOIN LATERAL aclexplode(COALESCE(_c.relacl, acldefault('r', _c.relowner))) AS _acl
                        WHERE _c.oid = objects.table_name
                          AND _acl.grantee = objects.grantee
@@ -1254,7 +1254,7 @@ BEGIN
                        acl.grantee,
                        'h' AS history_or_portion
                 FROM periods.system_versioning AS sv
-                JOIN pg_class AS c ON c.oid IN (sv.history_table_name, sv.view_name)
+                JOIN pg_catalog.pg_class AS c ON c.oid IN (sv.history_table_name, sv.view_name)
                 CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
 
                 UNION ALL
@@ -1267,7 +1267,7 @@ BEGIN
                        acl.grantee,
                        'p' AS history_or_portion
                 FROM periods.for_portion_views AS fpv
-                JOIN pg_class AS c ON c.oid = fpv.view_name
+                JOIN pg_catalog.pg_class AS c ON c.oid = fpv.view_name
                 CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
 
                 UNION ALL
@@ -1280,7 +1280,7 @@ BEGIN
                        acl.grantee,
                        'h'
                 FROM periods.system_versioning AS sv
-                JOIN pg_proc AS p ON p.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
+                JOIN pg_catalog.pg_proc AS p ON p.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
                 CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
             ) AS objects
             ORDER BY object_name, object_type, privilege_type
@@ -1312,9 +1312,9 @@ BEGIN
                        'SELECT' AS privilege_type,
                        acl.grantee
                 FROM periods.system_versioning AS sv
-                JOIN pg_class AS c ON c.oid = sv.table_name
+                JOIN pg_catalog.pg_class AS c ON c.oid = sv.table_name
                 CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
-                JOIN pg_class AS hc ON hc.oid IN (sv.history_table_name, sv.view_name)
+                JOIN pg_catalog.pg_class AS hc ON hc.oid IN (sv.history_table_name, sv.view_name)
                 WHERE acl.privilege_type = 'SELECT'
                   AND NOT has_table_privilege(acl.grantee, hc.oid, 'SELECT')
 
@@ -1325,9 +1325,9 @@ BEGIN
                        acl.privilege_type,
                        acl.grantee
                 FROM periods.for_portion_views AS fpv
-                JOIN pg_class AS c ON c.oid = fpv.table_name
+                JOIN pg_catalog.pg_class AS c ON c.oid = fpv.table_name
                 CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
-                JOIN pg_class AS fpc ON fpc.oid = fpv.view_name
+                JOIN pg_catalog.pg_class AS fpc ON fpc.oid = fpv.view_name
                 WHERE NOT has_table_privilege(acl.grantee, fpc.oid, acl.privilege_type)
 
                 UNION ALL
@@ -1337,13 +1337,13 @@ BEGIN
                        'EXECUTE',
                        acl.grantee
                 FROM periods.system_versioning AS sv
-                JOIN pg_class AS c ON c.oid = sv.table_name
+                JOIN pg_catalog.pg_class AS c ON c.oid = sv.table_name
                 CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
-                JOIN pg_proc AS hp ON hp.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
+                JOIN pg_catalog.pg_proc AS hp ON hp.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
                 WHERE acl.privilege_type = 'SELECT'
                   AND NOT has_function_privilege(acl.grantee, hp.oid, 'EXECUTE')
             ) AS objects
-            LEFT JOIN pg_authid AS a ON a.oid = objects.grantee
+            LEFT JOIN pg_catalog.pg_authid AS a ON a.oid = objects.grantee
             GROUP BY object_type
         LOOP
             EXECUTE cmd;
@@ -1361,9 +1361,9 @@ BEGIN
                    acl.privilege_type,
                    acl.privilege_type AS base_privilege_type
             FROM periods.system_versioning AS sv
-            JOIN pg_class AS c ON c.oid = sv.table_name
+            JOIN pg_catalog.pg_class AS c ON c.oid = sv.table_name
             CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
-            JOIN pg_class AS hc ON hc.oid IN (sv.history_table_name, sv.view_name)
+            JOIN pg_catalog.pg_class AS hc ON hc.oid IN (sv.history_table_name, sv.view_name)
             WHERE acl.privilege_type = 'SELECT'
               AND NOT EXISTS (
                 SELECT
@@ -1378,9 +1378,9 @@ BEGIN
                    acl.privilege_type,
                    acl.privilege_type
             FROM periods.for_portion_views AS fpv
-            JOIN pg_class AS c ON c.oid = fpv.table_name
+            JOIN pg_catalog.pg_class AS c ON c.oid = fpv.table_name
             CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
-            JOIN pg_class AS hc ON hc.oid = fpv.view_name
+            JOIN pg_catalog.pg_class AS hc ON hc.oid = fpv.view_name
             WHERE NOT EXISTS (
                 SELECT
                 FROM aclexplode(COALESCE(hc.relacl, acldefault('r', hc.relowner))) AS _acl
@@ -1394,9 +1394,9 @@ BEGIN
                    'EXECUTE',
                    'SELECT'
             FROM periods.system_versioning AS sv
-            JOIN pg_class AS c ON c.oid = sv.table_name
+            JOIN pg_catalog.pg_class AS c ON c.oid = sv.table_name
             CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
-            JOIN pg_proc AS hp ON hp.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
+            JOIN pg_catalog.pg_proc AS hp ON hp.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
             WHERE acl.privilege_type = 'SELECT'
               AND NOT EXISTS (
                 SELECT
@@ -1423,7 +1423,7 @@ BEGIN
                        'SELECT' AS privilege_type,
                        hacl.grantee
                 FROM periods.system_versioning AS sv
-                JOIN pg_class AS hc ON hc.oid IN (sv.history_table_name, sv.view_name)
+                JOIN pg_catalog.pg_class AS hc ON hc.oid IN (sv.history_table_name, sv.view_name)
                 CROSS JOIN LATERAL aclexplode(COALESCE(hc.relacl, acldefault('r', hc.relowner))) AS hacl
                 WHERE hacl.privilege_type = 'SELECT'
                   AND NOT has_table_privilege(hacl.grantee, sv.table_name, 'SELECT')
@@ -1435,7 +1435,7 @@ BEGIN
                        hacl.privilege_type,
                        hacl.grantee
                 FROM periods.for_portion_views AS fpv
-                JOIN pg_class AS hc ON hc.oid = fpv.view_name
+                JOIN pg_catalog.pg_class AS hc ON hc.oid = fpv.view_name
                 CROSS JOIN LATERAL aclexplode(COALESCE(hc.relacl, acldefault('r', hc.relowner))) AS hacl
                 WHERE NOT has_table_privilege(hacl.grantee, fpv.table_name, hacl.privilege_type)
 
@@ -1446,12 +1446,12 @@ BEGIN
                        'EXECUTE' AS privilege_type,
                        hacl.grantee
                 FROM periods.system_versioning AS sv
-                JOIN pg_proc AS hp ON hp.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
+                JOIN pg_catalog.pg_proc AS hp ON hp.oid = ANY (ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]::regprocedure[])
                 CROSS JOIN LATERAL aclexplode(COALESCE(hp.proacl, acldefault('f', hp.proowner))) AS hacl
                 WHERE hacl.privilege_type = 'EXECUTE'
                   AND NOT has_table_privilege(hacl.grantee, sv.table_name, 'SELECT')
             ) AS objects
-            LEFT JOIN pg_authid AS a ON a.oid = objects.grantee
+            LEFT JOIN pg_catalog.pg_authid AS a ON a.oid = objects.grantee
             GROUP BY object_type
         LOOP
             EXECUTE cmd;
@@ -1716,7 +1716,7 @@ BEGIN
         'CREATE VIEW %1$I.%2$I AS SELECT %5$s FROM %1$I.%3$I UNION ALL SELECT %5$s FROM %1$I.%4$I',
         schema_name, view_name, table_name, history_table_name,
         (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum)
-         FROM pg_attribute AS a
+         FROM pg_catalog.pg_attribute AS a
          WHERE a.attrelid = table_class
            AND a.attnum > 0
            AND NOT a.attisdropped
@@ -1794,8 +1794,8 @@ BEGIN
             SELECT c.relkind AS object_type,
                    c.oid::regclass::text AS object_name,
                    acl.grantee AS grantee
-            FROM pg_class AS c
-            JOIN pg_namespace AS n ON n.oid = c.relnamespace
+            FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
             CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
             WHERE n.nspname = schema_name
               AND c.relname IN (history_table_name, view_name)
@@ -1805,7 +1805,7 @@ BEGIN
             SELECT 'f',
                    p.oid::regprocedure::text,
                    acl.grantee
-            FROM pg_proc AS p
+            FROM pg_catalog.pg_proc AS p
             CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
             WHERE p.oid = ANY (ARRAY[
                     format('%I.%I(timestamp with time zone)', schema_name, function_as_of_name)::regprocedure,
@@ -1814,7 +1814,7 @@ BEGIN
                     format('%I.%I(timestamp with time zone,timestamp with time zone)', schema_name, function_from_to_name)::regprocedure
                 ])
         ) AS objects
-        LEFT JOIN pg_authid AS a ON a.oid = objects.grantee
+        LEFT JOIN pg_catalog.pg_authid AS a ON a.oid = objects.grantee
         GROUP BY objects.object_type
     LOOP
         EXECUTE sql;
@@ -1822,9 +1822,9 @@ BEGIN
 
     FOR grantees IN
         SELECT string_agg(quote_ident(COALESCE(a.rolname, 'public')), ', ')
-        FROM pg_class AS c
+        FROM pg_catalog.pg_class AS c
         CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) AS acl
-        LEFT JOIN pg_authid AS a ON a.oid = acl.grantee
+        LEFT JOIN pg_catalog.pg_authid AS a ON a.oid = acl.grantee
         WHERE c.oid = table_class
           AND acl.privilege_type = 'SELECT'
     LOOP
@@ -3219,7 +3219,7 @@ BEGIN
         JOIN periods.periods AS p ON (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
         CROSS JOIN LATERAL unnest(uk.column_names || ARRAY[p.start_column_name, p.end_column_name]) WITH ORDINALITY AS u (column_name, ordinality)
         JOIN pg_catalog.pg_constraint AS c ON c.conrelid = uk.table_name
-        WHERE NOT EXISTS (SELECT FROM pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (uk.table_name, uk.unique_constraint))
+        WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (uk.table_name, uk.unique_constraint))
         GROUP BY uk.key_name, c.oid, c.conname
         HAVING format('UNIQUE (%s)', string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)) = pg_catalog.pg_get_constraintdef(c.oid)
     LOOP

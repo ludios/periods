@@ -1844,7 +1844,7 @@ SELECT count(*) > 0 AS hijack_fired,
 FROM pg_temp.b32t_marker;
  hijack_fired | ran_as_definer 
 --------------+----------------
- t            | t
+ f            | f
 (1 row)
 
 DROP TABLE b32t;
