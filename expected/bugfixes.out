@@ -504,11 +504,15 @@ SELECT periods.add_period('bcp', 'p', 's', 'e');
 
 /* Dropping the bounds constraint out from under the period must be blocked. */
 ALTER TABLE bcp DROP CONSTRAINT bcp_p_check;
+ERROR:  cannot drop constraint "bcp_p_check" on table "bcp" because it is used in period "p"
+CONTEXT:  PL/pgSQL function periods.drop_protection() line 304 at RAISE
 /* And purging the period must work. */
 SELECT periods.drop_period('bcp', 'p', purge => true);
-ERROR:  constraint "bcp_p_check" of relation "bcp" does not exist
-CONTEXT:  SQL statement "ALTER TABLE bcp DROP CONSTRAINT bcp_p_check"
-PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 80 at EXECUTE
+ drop_period 
+-------------
+ t
+(1 row)
+
 DROP TABLE bcp;
 /* CASCADE+purge of system_time with versioning tears down through
  * drop_system_versioning, which recurses into drop_period; the bounds
@@ -528,13 +532,16 @@ NOTICE:  history table "dtd_history" created for "dtd", be sure to index it prop
 (1 row)
 
 SELECT periods.drop_period('dtd', 'system_time', 'CASCADE', purge => true);
-ERROR:  constraint "dtd_system_time_check" of relation "dtd" does not exist
-CONTEXT:  SQL statement "ALTER TABLE dtd DROP CONSTRAINT dtd_system_time_check"
-PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 118 at EXECUTE
+ drop_period 
+-------------
+ t
+(1 row)
+
 SELECT periods.drop_system_versioning('dtd', drop_behavior => 'CASCADE', purge => true);
+NOTICE:  table dtd does not have SYSTEM VERSIONING
  drop_system_versioning 
 ------------------------
- t
+ f
 (1 row)
 
 SELECT periods.drop_period('dtd', 'system_time', purge => true);
@@ -570,13 +577,15 @@ SELECT count(*) AS constraint_survives FROM pg_catalog.pg_constraint
     WHERE (conrelid, conname) = ('shc'::regclass, 'shc_se_check');
  constraint_survives 
 ---------------------
-                   0
+                   1
 (1 row)
 
 SELECT periods.drop_period('shc', 'p2', purge => true);
-ERROR:  constraint "shc_se_check" of relation "shc" does not exist
-CONTEXT:  SQL statement "ALTER TABLE shc DROP CONSTRAINT shc_se_check"
-PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 80 at EXECUTE
+ drop_period 
+-------------
+ t
+(1 row)
+
 SELECT count(*) AS constraint_purged FROM pg_catalog.pg_constraint
     WHERE (conrelid, conname) = ('shc'::regclass, 'shc_se_check');
  constraint_purged 

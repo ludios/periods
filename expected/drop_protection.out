@@ -88,6 +88,8 @@ ALTER TABLE dp DROP CONSTRAINT x; -- fails
 ERROR:  cannot drop constraint "x" on table "dp" because it is used in period unique key "k"
 CONTEXT:  PL/pgSQL function periods.drop_protection() line 197 at RAISE
 ALTER TABLE dp DROP CONSTRAINT dp_p_check; -- fails
+ERROR:  cannot drop constraint "dp_p_check" on table "dp" because it is used in period "p"
+CONTEXT:  PL/pgSQL function periods.drop_protection() line 304 at RAISE
 /* foreign_keys */
 CREATE TABLE dp_ref (LIKE dp);
 SELECT periods.add_period('dp_ref', 'p', 's', 'e', 'integerrange');
