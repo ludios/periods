@@ -192,6 +192,7 @@ DECLARE
 
     where_clause text;
     missing_pk_columns bigint;
+    changed_row jsonb;
 
     SERVER_VERSION CONSTANT integer := current_setting('server_version_num')::integer;
 
@@ -407,26 +408,28 @@ BEGIN
     END IF;
 
     /*
-     * Assign the changed columns from a jsonb_populate_record() of the new
-     * row, for the same complex-type reasons as the slice INSERTs around
-     * this.  Which columns changed is still decided on the jsonb text
-     * representations, as before.
+     * Collect the changed columns and their new values.  Which columns
+     * changed is still decided on the jsonb text representations, as before.
+     */
+    SELECT jsonb_object_agg(c.key, new_row -> c.key)
+    INTO changed_row
+    FROM (SELECT key, value FROM jsonb_each_text(new_row)
+          EXCEPT ALL
+          SELECT key, value FROM jsonb_each_text(jold)
+         ) AS c;
+
+    /*
+     * Assign them from a jsonb_populate_record() of just those columns, for
+     * the same complex-type reasons as the slice INSERTs around this.  Only
+     * the changed columns go into the record: converting the whole row would
+     * choke on unchanged columns of types whose JSON form cannot be read
+     * back (hstore, for one).
      */
     EXECUTE format('UPDATE %1$s SET (%2$s) = (SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r) WHERE %5$s AND %6$I > %7$L AND %8$I < %9$L',
                    info.table_name,
-                   (SELECT string_agg(quote_ident(j.key), ', ' ORDER BY j.key)
-                    FROM (SELECT key, value FROM jsonb_each_text(new_row)
-                          EXCEPT ALL
-                          SELECT key, value FROM jsonb_each_text(jold)
-                         ) AS j
-                   ),
-                   (SELECT string_agg('r.' || quote_ident(j.key), ', ' ORDER BY j.key)
-                    FROM (SELECT key, value FROM jsonb_each_text(new_row)
-                          EXCEPT ALL
-                          SELECT key, value FROM jsonb_each_text(jold)
-                         ) AS j
-                   ),
-                   new_row,
+                   (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(changed_row) AS u (k)),
+                   (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(changed_row) AS u (k)),
+                   changed_row,
                    where_clause,
                    info.end_column_name,
                    fromval,
