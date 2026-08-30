@@ -1080,14 +1080,14 @@ DROP TABLE t3_other;
  */
 CREATE TABLE t2_excl (id integer PRIMARY KEY, val text);
 SELECT periods.add_system_time_period('t2_excl', excluded_column_names => '{system_time_start}');
+ERROR:  cannot exclude period column "system_time_start"
+CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 326 at RAISE
+SELECT periods.add_system_time_period('t2_excl');
  add_system_time_period 
 ------------------------
  t
 (1 row)
 
-SELECT periods.add_system_time_period('t2_excl');
-ERROR:  period for SYSTEM_TIME already exists on table "t2_excl"
-CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 83 at RAISE
 SELECT periods.add_system_versioning('t2_excl');
 NOTICE:  history table "t2_excl_history" created for "t2_excl", be sure to index it properly
  add_system_versioning 
@@ -1100,21 +1100,18 @@ UPDATE t2_excl SET system_time_start = 'epoch';
 SELECT id, val, system_time_start = 'epoch' AS forged FROM t2_excl;
  id | val | forged 
 ----+-----+--------
-  1 | a   | t
+  1 | a   | f
 (1 row)
 
 SELECT count(*) AS history_rows FROM t2_excl_history;
  history_rows 
 --------------
-            0
+            1
 (1 row)
 
 SELECT periods.set_system_time_period_excluded_columns('t2_excl', '{system_time_end}');
- set_system_time_period_excluded_columns 
------------------------------------------
- 
-(1 row)
-
+ERROR:  cannot exclude period column "system_time_end"
+CONTEXT:  PL/pgSQL function periods.set_system_time_period_excluded_columns(regclass,name[]) line 47 at RAISE
 /* Excluding an ordinary column must keep working */
 SELECT periods.set_system_time_period_excluded_columns('t2_excl', '{val}');
  set_system_time_period_excluded_columns 
@@ -1146,17 +1143,14 @@ SELECT periods.add_system_time_period('t2_names', 'my_start', 'my_end');
 (1 row)
 
 SELECT periods.set_system_time_period_excluded_columns('t2_names', '{my_end}');
- set_system_time_period_excluded_columns 
------------------------------------------
- 
-(1 row)
-
+ERROR:  cannot exclude period column "my_end"
+CONTEXT:  PL/pgSQL function periods.set_system_time_period_excluded_columns(regclass,name[]) line 47 at RAISE
 SELECT stp.excluded_column_names
 FROM periods.system_time_periods AS stp
 WHERE stp.table_name = 't2_names'::regclass;
  excluded_column_names 
 -----------------------
- {my_end}
+ {}
 (1 row)
 
 DROP TABLE t2_names;

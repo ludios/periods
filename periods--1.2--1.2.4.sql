@@ -1793,8 +1793,11 @@ $function$;
  * every table, so a temporal unique key on an unrelated table whose scalar
  * columns shared the requested start/end column names blocked
  * add_system_time_period() on a table it had nothing to do with.  Scope the
- * check to the table getting the period.  Apart from that predicate (and
- * OR REPLACE), the body is identical to the 1.2 original.
+ * check to the table getting the period.  The excluded-columns validation
+ * also accepted the period's own start/end columns, disabling the
+ * GENERATED ALWAYS enforcement and history writes for them; they are now
+ * rejected.  Apart from those two changes (and OR REPLACE), the body is
+ * identical to the 1.2 original.
  */
 CREATE OR REPLACE FUNCTION periods.add_system_time_period(
     table_class regclass,
@@ -2128,6 +2131,16 @@ BEGIN
         RAISE EXCEPTION 'cannot exclude system column "%"', excluded_column_name;
     END LOOP;
 
+    /* The period's own columns are what this machinery maintains; excluding
+     * them would let updates forge the bounds with no history written. */
+    FOR excluded_column_name IN
+        SELECT u.name
+        FROM unnest(excluded_column_names) AS u (name)
+        WHERE u.name IN (start_column_name, end_column_name)
+    LOOP
+        RAISE EXCEPTION 'cannot exclude period column "%"', excluded_column_name;
+    END LOOP;
+
     generated_always_trigger := coalesce(
         generated_always_trigger,
         periods._choose_name(ARRAY[table_name], 'system_time_generated_always'));
@@ -2156,5 +2169,74 @@ BEGIN
         excluded_column_names);
 
     RETURN true;
+END;
+$function$;
+
+/*
+ * set_system_time_period_excluded_columns() gets the same period-column
+ * rejection as add_system_time_period(): the SYSTEM_TIME bound columns may
+ * not be excluded from versioning.  Otherwise identical to the 1.2 original.
+ */
+CREATE OR REPLACE FUNCTION periods.set_system_time_period_excluded_columns(
+    table_name regclass,
+    excluded_column_names name[])
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    excluded_column_name name;
+    start_column_name name;
+    end_column_name name;
+BEGIN
+    /* Always serialize operations on our catalogs */
+    PERFORM periods._serialize(table_name);
+
+    /* Make sure all the excluded columns exist */
+    FOR excluded_column_name IN
+        SELECT u.name
+        FROM unnest(excluded_column_names) AS u (name)
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_attribute AS a
+            WHERE (a.attrelid, a.attname) = (table_name, u.name))
+    LOOP
+        RAISE EXCEPTION 'column "%" does not exist', excluded_column_name;
+    END LOOP;
+
+    /* Don't allow system columns to be excluded either */
+    FOR excluded_column_name IN
+        SELECT u.name
+        FROM unnest(excluded_column_names) AS u (name)
+        JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attname) = (table_name, u.name)
+        WHERE a.attnum < 0
+    LOOP
+        RAISE EXCEPTION 'cannot exclude system column "%"', excluded_column_name;
+    END LOOP;
+
+    /* The period's own columns are what this machinery maintains; excluding
+     * them would let updates forge the bounds with no history written.  When
+     * the table has no SYSTEM_TIME period at all, fall through and keep the
+     * historical silent no-op of the UPDATE below. */
+    SELECT p.start_column_name, p.end_column_name
+    INTO start_column_name, end_column_name
+    FROM periods.periods AS p
+    WHERE (p.table_name, p.period_name) = (table_name, 'system_time');
+
+    IF FOUND THEN
+        FOR excluded_column_name IN
+            SELECT u.name
+            FROM unnest(excluded_column_names) AS u (name)
+            WHERE u.name IN (start_column_name, end_column_name)
+        LOOP
+            RAISE EXCEPTION 'cannot exclude period column "%"', excluded_column_name;
+        END LOOP;
+    END IF;
+
+    /* Do it. */
+    UPDATE periods.system_time_periods AS stp SET
+        excluded_column_names = excluded_column_names
+    WHERE stp.table_name = table_name;
 END;
 $function$;
