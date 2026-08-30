@@ -852,6 +852,40 @@ DROP SCHEMA b32_evil;
 DROP TABLE b32_marker;
 SET ROLE TO periods_unprivileged_user;
 
+/*
+ * §3.2 again, without needing CREATE anywhere: unless pg_temp is named in the
+ * search_path it is searched *before* pg_catalog for relation names, so a plain
+ * temporary view can capture an unqualified system-catalog reference inside a
+ * SECURITY DEFINER function and get its own expressions evaluated with the
+ * definer's privileges.  TEMPORARY on the database is granted to PUBLIC by
+ * default, so every role can do this.
+ */
+
+CREATE TEMP TABLE b32t_marker (ran_as_definer boolean);
+
+CREATE FUNCTION b32t_evil() RETURNS boolean LANGUAGE sql VOLATILE AS
+$$
+    INSERT INTO pg_temp.b32t_marker VALUES (current_user <> 'periods_unprivileged_user');
+    SELECT true;
+$$;
+
+CREATE TEMP VIEW pg_class AS
+    SELECT c.*, public.b32t_evil() AS hijacked FROM pg_catalog.pg_class AS c;
+/* Cached plans still name pg_catalog.pg_class; an attacker just uses a fresh session. */
+DISCARD PLANS;
+CREATE TABLE b32t (id integer, s date, e date);
+SELECT periods.add_period('public.b32t', 'p', 's', 'e');
+DROP VIEW pg_temp.pg_class;
+
+/* The call count depends on how many catalog scans ran, so only its sign matters. */
+SELECT count(*) > 0 AS hijack_fired,
+       coalesce(bool_or(ran_as_definer), false) AS ran_as_definer
+FROM pg_temp.b32t_marker;
+
+DROP TABLE b32t;
+DROP FUNCTION b32t_evil();
+DROP TABLE b32t_marker;
+
 /* Every SECURITY DEFINER function in the extension must pin its search_path. */
 SELECT count(*) AS security_definer_functions
 FROM pg_catalog.pg_proc AS p
