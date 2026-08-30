@@ -145,9 +145,17 @@ GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **
 	tuptable = SPI_tuptable;
 
 	dat = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &is_null);
+	if (is_null)
+	{
+		elog(ERROR, "unexpected NULL start column name for period \"%s\"", period_name);
+	}
 	*start_name = MemoryContextStrdup(mcxt, NameStr(*(DatumGetName(dat))));
 
 	dat = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 2, &is_null);
+	if (is_null)
+	{
+		elog(ERROR, "unexpected NULL end column name for period \"%s\"", period_name);
+	}
 	*end_name = MemoryContextStrdup(mcxt, NameStr(*(DatumGetName(dat))));
 
 	/* All done with SPI */
@@ -167,6 +175,7 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 {
 	int				ret;
 	int				i;
+	uint64			row;
 	Datum			values[1];
 	TupleDesc		tupdesc = RelationGetDescr(rel);
 	Bitmapset	   *excluded_attnums = NULL;
@@ -211,15 +220,19 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 		TupleDesc	spitupdesc = SPI_tuptable->tupdesc;
 		bool		isnull;
 
-		for (i = 0; i < SPI_processed; i++)
+		for (row = 0; row < SPI_processed; row++)
 		{
-			HeapTuple	tuple = SPI_tuptable->vals[i];
+			HeapTuple	tuple = SPI_tuptable->vals[row];
 			Datum		attdatum;
 			char	   *attname;
 			int16		attnum;
 
 			/* Get the attnum from the column name */
 			attdatum = SPI_getbinval(tuple, spitupdesc, 1, &isnull);
+			if (isnull)
+			{
+				elog(ERROR, "unexpected NULL excluded column name");
+			}
 			attname = NameStr(*(DatumGetName(attdatum)));
 			attnum = SPI_fnumber(tupdesc, attname);
 
@@ -356,6 +369,10 @@ GetHistoryTable(Relation rel)
 	/* Get oid from results */
 	tuptable = SPI_tuptable;
 	result = DatumGetObjectId(SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &is_null));
+	if (is_null)
+	{
+		elog(ERROR, "unexpected NULL history table name");
+	}
 
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
@@ -614,6 +631,7 @@ write_history(PG_FUNCTION_ARGS)
 	int16			start_num, end_num;
 	Oid				typeid;
 	bool			is_null;
+	Datum			old_start_datum;
 	Oid				history_id;
 	int				cmp;
 	bool			only_excluded_changed = false;
@@ -683,8 +701,19 @@ write_history(PG_FUNCTION_ARGS)
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event) ||
 		(TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event) && !only_excluded_changed))
 	{
-		Datum	start_datum = SPI_getbinval(new_row, tupledesc, start_num, &is_null);
-		Datum	end_datum = SPI_getbinval(new_row, tupledesc, end_num, &is_null);
+		Datum	start_datum;
+		Datum	end_datum;
+		bool	start_is_null;
+		bool	end_is_null;
+
+		start_datum = SPI_getbinval(new_row, tupledesc, start_num, &start_is_null);
+		end_datum = SPI_getbinval(new_row, tupledesc, end_num, &end_is_null);
+
+		/* Should be impossible, but the columns must never be NULL */
+		if (start_is_null || end_is_null)
+		{
+			elog(ERROR, "unexpected NULL in period bound columns");
+		}
 
 		if (CompareWithCurrentDatum(typeid, start_datum) != 0)
 			ereport(ERROR,
@@ -711,8 +740,12 @@ write_history(PG_FUNCTION_ARGS)
 		return PointerGetDatum(NULL);
 
 	/* Compare the OLD row's start with the transaction start */
-	cmp = CompareWithCurrentDatum(typeid,
-			SPI_getbinval(old_row, tupledesc, start_num, &is_null));
+	old_start_datum = SPI_getbinval(old_row, tupledesc, start_num, &is_null);
+	if (is_null)
+	{
+		elog(ERROR, "unexpected NULL in period start column");
+	}
+	cmp = CompareWithCurrentDatum(typeid, old_start_datum);
 
 	/*
 	 * Don't do anything more if the start time is still the same.
