@@ -25,10 +25,60 @@ New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
     `SECURITY DEFINER` owner.  The bodies are now built with an inner `format()`
     and embedded via `%L`.
 
-    Two further SECURITY DEFINER weaknesses from the same review remain open and
-    need a larger redesign: the functions do not pin `search_path` (a naive pin
-    breaks user-defined range types), and they do not verify table ownership
-    before running as the definer.  See `ai-code-reviews/claude.md` §3.2/§3.3.
+  - All 19 `SECURITY DEFINER` functions now run with
+    `SET search_path = pg_catalog, pg_temp`.  Without it every unqualified name
+    in them — including calls to built-ins such as `lower(period_name)` — was
+    resolved through the *caller's* `search_path`.  PostgreSQL prefers an exact
+    argument-type match over one reached by coercion, so a caller who could
+    create a function in any schema on their own path could shadow one of those
+    calls and have it run with the definer's (typically the superuser's)
+    privileges.  Naming `pg_temp` explicitly, and last, closes a second route:
+    left unnamed it is searched *ahead* of `pg_catalog` for relation names, so a
+    plain temporary view called `pg_class` captured the catalog reads inside
+    `health_checks()`, and evaluating its target list ran the attacker's
+    expressions as the definer.  No privilege at all was needed for that one.
+
+    The last 34 bare references to `pg_class`, `pg_proc`, `pg_attribute`,
+    `pg_constraint`, `pg_namespace` and `pg_authid` are now schema-qualified as
+    well, so that route stays closed even without the pinned path.
+
+    User-visible consequence: `regclass` and `regprocedure` values interpolated
+    into messages now render schema-qualified, so `table "dp"` reads
+    `table "public.dp"`.
+
+  - The DDL entry points now require the caller to be able to act as the owner
+    of the table they are given.  They are `SECURITY DEFINER` and executable by
+    `PUBLIC`, and previously performed no authorization at all: any role could
+    add periods (and with them `CHECK` constraints and `SET NOT NULL`), add
+    SYSTEM_TIME — which *adds two columns* — switch on SYSTEM VERSIONING, and
+    tear any of it down again, on a table it had no privilege on whatsoever.
+
+    Three routes needed more than the table argument: `add_foreign_key()` puts
+    triggers on the *referenced* table and now requires `REFERENCES` on the
+    referenced key columns, as a plain `FOREIGN KEY` does;
+    `drop_foreign_key(NULL, key)` names no table and now authorizes per key,
+    accepting either end's owner (which is what keeps
+    `drop_unique_key(… 'CASCADE')` working across owners); and
+    `add_system_versioning()` would adopt an existing history table with a
+    matching column layout and `ALTER TABLE … OWNER TO` it, so owning any table
+    let you take over any other table whose columns lined up.
+
+    The role being authorized is the one the session is acting as, ignoring
+    `SECURITY DEFINER` frames — a new `periods._outer_user()` over PostgreSQL's
+    `GetOuterUserId()`.  `current_user` is by then the definer, and
+    `session_user` cannot see a `SET ROLE`.  PostgreSQL does not expose the
+    *immediate* caller's identity inside a definer frame, so if you wrap a
+    `periods` call in your own `SECURITY DEFINER` function the check sees
+    whoever called your wrapper, not your wrapper's owner.
+
+    `EXECUTE` is deliberately still granted to `PUBLIC`: these functions are
+    meant to be used by ordinary table owners.
+
+  - `add_unique_key()` and `rename_following()` no longer pass a period's
+    `range_type` through `%I`.  A `regtype` already renders as a finished
+    identifier, quoted or schema-qualified as needed, so `%I` quoted it a second
+    time and any range type outside `pg_catalog`, or with a name needing quotes,
+    failed to get an exclusion constraint.
 
   - The SYSTEM_TIME period's own start/end columns can no longer be named in
     `excluded_column_names`.  Excluding a bound column disabled both the
