@@ -26,7 +26,7 @@ SELECT periods.add_system_time_period('dp_sysver');
 (1 row)
 
 SELECT periods.add_system_versioning('dp_sysver');
-NOTICE:  history table "dp_sysver_history" created for "dp_sysver", be sure to index it properly
+NOTICE:  history table "public.dp_sysver_history" created for "public.dp_sysver", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -146,7 +146,7 @@ SELECT periods.add_system_time_period('pc_leak');
 (1 row)
 
 SELECT periods.add_system_versioning('pc_leak');
-NOTICE:  history table "pc_leak_history" created for "pc_leak", be sure to index it properly
+NOTICE:  history table "public.pc_leak_history" created for "public.pc_leak", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -506,7 +506,7 @@ SELECT periods.add_period('bcp', 'p', 's', 'e');
 
 /* Dropping the bounds constraint out from under the period must be blocked. */
 ALTER TABLE bcp DROP CONSTRAINT bcp_p_check;
-ERROR:  cannot drop constraint "bcp_p_check" on table "bcp" because it is used in period "p"
+ERROR:  cannot drop constraint "bcp_p_check" on table "public.bcp" because it is used in period "p"
 CONTEXT:  PL/pgSQL function periods.drop_protection() line 304 at RAISE
 /* And purging the period must work. */
 SELECT periods.drop_period('bcp', 'p', purge => true);
@@ -527,7 +527,7 @@ SELECT periods.add_system_time_period('dtd');
 (1 row)
 
 SELECT periods.add_system_versioning('dtd');
-NOTICE:  history table "dtd_history" created for "dtd", be sure to index it properly
+NOTICE:  history table "public.dtd_history" created for "public.dtd", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -540,14 +540,14 @@ SELECT periods.drop_period('dtd', 'system_time', 'CASCADE', purge => true);
 (1 row)
 
 SELECT periods.drop_system_versioning('dtd', drop_behavior => 'CASCADE', purge => true);
-NOTICE:  table dtd does not have SYSTEM VERSIONING
+NOTICE:  table public.dtd does not have SYSTEM VERSIONING
  drop_system_versioning 
 ------------------------
  f
 (1 row)
 
 SELECT periods.drop_period('dtd', 'system_time', purge => true);
-NOTICE:  period system_time not found on table dtd
+NOTICE:  period system_time not found on table public.dtd
  drop_period 
 -------------
  f
@@ -610,7 +610,7 @@ SELECT periods.add_period('nn', 'p', 's', 'e');
 (1 row)
 
 ALTER TABLE nn ALTER COLUMN s DROP NOT NULL;
-ERROR:  cannot drop NOT NULL from column "s" of table "nn" because it is part of the period "p"
+ERROR:  cannot drop NOT NULL from column "s" of table "public.nn" because it is part of the period "p"
 CONTEXT:  PL/pgSQL function periods.health_checks() line 320 at RAISE
 INSERT INTO nn VALUES (1, NULL, 10);
 ERROR:  null value in column "s" of relation "nn" violates not-null constraint
@@ -642,7 +642,7 @@ SELECT periods.add_system_time_period('trunc_sv');
 (1 row)
 
 SELECT periods.add_system_versioning('trunc_sv');
-NOTICE:  history table "trunc_sv_history" created for "trunc_sv", be sure to index it properly
+NOTICE:  history table "public.trunc_sv_history" created for "public.trunc_sv", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -962,7 +962,7 @@ SELECT periods.add_system_time_period('b31_inj', 'ss', 'e''; INSERT INTO pg_temp
 (1 row)
 
 SELECT periods.add_system_versioning('b31_inj');
-NOTICE:  history table "b31_inj_history" created for "b31_inj", be sure to index it properly
+NOTICE:  history table "public.b31_inj_history" created for "public.b31_inj", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -995,7 +995,7 @@ SELECT periods.add_system_time_period('b31_ok', 's''', 'e''');
 (1 row)
 
 SELECT periods.add_system_versioning('b31_ok');
-NOTICE:  history table "b31_ok_history" created for "b31_ok", be sure to index it properly
+NOTICE:  history table "public.b31_ok_history" created for "public.b31_ok", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -1090,7 +1090,7 @@ SELECT periods.add_system_time_period('t2_excl');
 (1 row)
 
 SELECT periods.add_system_versioning('t2_excl');
-NOTICE:  history table "t2_excl_history" created for "t2_excl", be sure to index it properly
+NOTICE:  history table "public.t2_excl_history" created for "public.t2_excl", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -1177,7 +1177,7 @@ SELECT periods.add_system_time_period('t2_legacy');
 (1 row)
 
 SELECT periods.add_system_versioning('t2_legacy');
-NOTICE:  history table "t2_legacy_history" created for "t2_legacy", be sure to index it properly
+NOTICE:  history table "public.t2_legacy_history" created for "public.t2_legacy", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -1231,7 +1231,7 @@ SELECT periods.add_system_time_period('b14');
 (1 row)
 
 SELECT periods.add_system_versioning('b14');
-NOTICE:  history table "b14_history" created for "b14", be sure to index it properly
+NOTICE:  history table "public.b14_history" created for "public.b14", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -1347,7 +1347,7 @@ SELECT periods.add_system_time_period('b14pub');
 (1 row)
 
 SELECT periods.add_system_versioning('b14pub');
-NOTICE:  history table "b14pub_history" created for "b14pub", be sure to index it properly
+NOTICE:  history table "public.b14pub_history" created for "public.b14pub", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -1388,12 +1388,12 @@ SELECT periods.add_system_time_period('d6');
 
 CREATE VIEW d6_history AS SELECT * FROM d6;
 SELECT periods.add_system_versioning('d6');
-ERROR:  history relation "d6_history" must be a regular table
+ERROR:  history relation "public.d6_history" must be a regular table
 CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 101 at RAISE
 DROP VIEW d6_history;
 CREATE MATERIALIZED VIEW d6_history AS SELECT * FROM d6;
 SELECT periods.add_system_versioning('d6');
-ERROR:  history relation "d6_history" must be a regular table
+ERROR:  history relation "public.d6_history" must be a regular table
 CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 101 at RAISE
 DROP MATERIALIZED VIEW d6_history;
 /* Adopting a legitimate pre-existing plain table must keep working */
@@ -1442,7 +1442,7 @@ SELECT periods.add_period('h2', 'system_time', 'sts', 'ste', range_type => 'tstz
 ERROR:  range_type may not be specified for SYSTEM_TIME periods
 CONTEXT:  PL/pgSQL function periods.add_period(regclass,name,name,name,regtype,name) line 48 at RAISE
 SELECT periods.drop_system_time_period('h2', purge => true);
-NOTICE:  period system_time not found on table h2
+NOTICE:  period system_time not found on table public.h2
  drop_system_time_period 
 -------------------------
  f
@@ -1741,12 +1741,11 @@ SELECT periods.add_period('qr_make', 'p', 's', 'e', '"MyRange"');
 (1 row)
 
 SELECT periods.add_unique_key('qr_make', ARRAY['id'], 'p', 'qr_make_k');
-ERROR:  function "MyRange"(integer, integer, text) does not exist
-LINE 1: ...UE (id, s, e), ADD EXCLUDE USING gist (id WITH =, """MyRange...
-                                                             ^
-HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
-QUERY:  ALTER TABLE public.qr_make ADD UNIQUE (id, s, e), ADD EXCLUDE USING gist (id WITH =, """MyRange"""(s, e, '[)'::text) WITH &&)
-CONTEXT:  PL/pgSQL function periods.add_unique_key(regclass,name[],name,name,name,name) line 196 at EXECUTE
+ add_unique_key 
+----------------
+ qr_make_k
+(1 row)
+
 /* add_unique_key matching a constraint that already exists */
 CREATE TABLE qr_match (id integer, s integer, e integer);
 SELECT periods.add_period('qr_match', 'p', 's', 'e', '"MyRange"');
@@ -1759,14 +1758,18 @@ ALTER TABLE qr_match
     ADD CONSTRAINT qr_match_u UNIQUE (id, s, e),
     ADD CONSTRAINT qr_match_x EXCLUDE USING gist (id WITH =, "MyRange"(s, e, '[)') WITH &&);
 SELECT periods.add_unique_key('qr_match', ARRAY['id'], 'p', 'qr_match_k', 'qr_match_u', 'qr_match_x');
-ERROR:  constraint "qr_match_x" does not match
-CONTEXT:  PL/pgSQL function periods.add_unique_key(regclass,name[],name,name,name,name) line 154 at RAISE
+ add_unique_key 
+----------------
+ qr_match_k
+(1 row)
+
 /* rename_following re-derives the constraint text when it is renamed away */
 ALTER TABLE qr_match RENAME CONSTRAINT qr_match_x TO qr_match_x2;
 SELECT exclude_constraint FROM periods.unique_keys WHERE key_name = 'qr_match_k';
  exclude_constraint 
 --------------------
-(0 rows)
+ qr_match_x2
+(1 row)
 
 DROP TABLE qr_match;
 DROP TABLE qr_make;
@@ -1803,7 +1806,7 @@ SELECT count(*) AS hijack_calls,
 FROM pg_temp.b32_marker;
  hijack_calls | ran_as_definer 
 --------------+----------------
-            1 | t
+            0 | f
 (1 row)
 
 DROP TABLE b32;
@@ -1869,24 +1872,5 @@ WHERE n.nspname = 'periods'
 ORDER BY p.proname;
  security_definer_without_pinned_search_path 
 ---------------------------------------------
- add_for_portion_view
- add_foreign_key
- add_period
- add_system_time_period
- add_system_versioning
- add_unique_key
- drop_for_portion_view
- drop_foreign_key
- drop_period
- drop_protection
- drop_system_time_period
- drop_system_versioning
- drop_unique_key
- generated_always_as_row_start_end
- health_checks
- rename_following
- set_system_time_period_excluded_columns
- truncate_system_versioning
- write_history
-(19 rows)
+(0 rows)
 

@@ -25,7 +25,7 @@ SELECT periods.add_system_time_period('excl', excluded_column_names => ARRAY['fl
 (1 row)
 
 SELECT periods.add_system_versioning('excl');
-NOTICE:  history table "excl_history" created for "excl", be sure to index it properly
+NOTICE:  history table "public.excl_history" created for "public.excl", be sure to index it properly
  add_system_versioning 
 -----------------------
  

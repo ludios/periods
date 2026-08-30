@@ -40,7 +40,7 @@ SELECT periods.add_system_versioning('sysver',
     function_between_name => 'custom_between',
     function_between_symmetric_name => 'custom_between_symmetric',
     function_from_to_name => 'custom_from_to');
-NOTICE:  history table "custom_history_name" created for "sysver", be sure to index it properly
+NOTICE:  history table "public.custom_history_name" created for "public.sysver", be sure to index it properly
  add_system_versioning 
 -----------------------
  
@@ -60,7 +60,7 @@ SELECT periods.drop_system_versioning('sysver', drop_behavior => 'CASCADE');
 
 DROP TABLE custom_history_name;
 SELECT periods.add_system_versioning('sysver');
-NOTICE:  history table "sysver_history" created for "sysver", be sure to index it properly
+NOTICE:  history table "public.sysver_history" created for "public.sysver", be sure to index it properly
  add_system_versioning 
 -----------------------
  

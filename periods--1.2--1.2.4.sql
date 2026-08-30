@@ -13,6 +13,7 @@ CREATE OR REPLACE FUNCTION periods.drop_period(table_name regclass, period_name 
  RETURNS boolean
  LANGUAGE plpgsql
  SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
 AS
 $function$
 #variable_conflict use_variable
@@ -827,6 +828,7 @@ CREATE OR REPLACE FUNCTION periods.drop_protection()
  RETURNS event_trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
 AS
 $function$
 #variable_conflict use_variable
@@ -1151,6 +1153,7 @@ CREATE OR REPLACE FUNCTION periods.health_checks()
  RETURNS event_trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
 AS
 $function$
 #variable_conflict use_variable
@@ -1487,6 +1490,7 @@ CREATE OR REPLACE FUNCTION periods.truncate_system_versioning()
  LANGUAGE plpgsql
  STRICT
  SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
 AS
 $function$
 #variable_conflict use_variable
@@ -1541,6 +1545,7 @@ CREATE OR REPLACE FUNCTION periods.add_system_versioning(
  RETURNS void
  LANGUAGE plpgsql
  SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
 AS
 $function$
 #variable_conflict use_variable
@@ -2820,6 +2825,7 @@ CREATE OR REPLACE FUNCTION periods.add_unique_key(
  RETURNS name
  LANGUAGE plpgsql
  SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
 AS
 $function$
 #variable_conflict use_variable
@@ -3050,6 +3056,7 @@ CREATE OR REPLACE FUNCTION periods.rename_following()
  RETURNS event_trigger
  LANGUAGE plpgsql
  SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
 AS
 $function$
 #variable_conflict use_variable
@@ -3306,3 +3313,54 @@ BEGIN
     /* Nothing to do here */
 END;
 $function$;
+
+/*
+ * None of the extension's SECURITY DEFINER functions pinned their search_path,
+ * so every unqualified name in them — including the built-ins they call, such
+ * as lower(period_name) in add_period() — was resolved through the *caller's*
+ * search_path.  PostgreSQL prefers an exact argument-type match over one
+ * reached by coercion, so a caller who can create objects in any schema on
+ * their own path could shadow lower(name) and have it run with the definer's
+ * (typically superuser's) privileges.
+ *
+ * pg_catalog first makes every unqualified built-in resolve there, and nobody
+ * but a superuser can add to it.  pg_temp has to be named explicitly, and last:
+ * when it is not named, PostgreSQL searches it *before* everything else for
+ * relation and type names, which is the hazard being removed.  The extension's
+ * own objects are already written periods.* and the system catalogs
+ * pg_catalog.*, so nothing else needs re-qualifying.
+ *
+ * The functions this script redefines carry the setting in their headers above;
+ * the remaining twelve are pinned here.  CREATE OR REPLACE FUNCTION resets
+ * proconfig, so a definition without the clause would silently drop the pin —
+ * the `bugfixes` suite asserts that every prosecdef function in schema periods
+ * still has it.
+ *
+ * Only SECURITY DEFINER functions are pinned.  The rest run with the caller's
+ * own privileges, where shadowing buys the caller nothing, and the SQL-language
+ * predicate functions must stay free of a SET clause so they can be inlined.
+ */
+ALTER FUNCTION periods.add_for_portion_view(regclass,name)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.add_period(regclass,name,name,name,regtype,name)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[])
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.drop_for_portion_view(regclass,name,periods.drop_behavior,boolean)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.drop_foreign_key(regclass,name)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.drop_system_time_period(regclass,periods.drop_behavior,boolean)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.drop_system_versioning(regclass,periods.drop_behavior,boolean)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.drop_unique_key(regclass,name,periods.drop_behavior,boolean)
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.generated_always_as_row_start_end()
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.set_system_time_period_excluded_columns(regclass,name[])
+    SET search_path TO pg_catalog, pg_temp;
+ALTER FUNCTION periods.write_history()
+    SET search_path TO pg_catalog, pg_temp;
