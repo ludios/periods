@@ -1,5 +1,6 @@
 -- Model-output: Claude Fable 5
 -- Model-output: Claude Opus 4.8
+-- Model-output: Claude Opus 5
 /* periods--1.2--1.2.4.sql: bug fixes on top of the 1.2 schema (no catalog changes) */
 
 /*
@@ -2792,5 +2793,516 @@ BEGIN
     PERFORM periods.validate_foreign_key_new_row(key_name, NULL);
 
     RETURN key_name;
+END;
+$function$;
+
+/*
+ * periods.periods.range_type is a regtype, and a regtype renders itself as a
+ * ready-made identifier: quoted when the name needs it, schema-qualified when
+ * the type is not visible on the search_path.  Passing it through %I quoted the
+ * whole rendered name a second time ("public.myrange" as one identifier), so
+ * every range type outside pg_catalog, and every range type whose name is not a
+ * bare lowercase word, broke the EXCLUDE constraint text.  Interpolate it with
+ * %s instead, which is also what pg_get_constraintdef() emits, keeping the two
+ * comparable.
+ *
+ * add_unique_key() builds that text to create the constraint and to check a
+ * user-supplied one; rename_following() rebuilds it to re-discover a constraint
+ * that was renamed out from under us.
+ */
+CREATE OR REPLACE FUNCTION periods.add_unique_key(
+        table_name regclass,
+        column_names name[],
+        period_name name,
+        key_name name DEFAULT NULL,
+        unique_constraint name DEFAULT NULL,
+        exclude_constraint name DEFAULT NULL)
+ RETURNS name
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    period_row periods.periods;
+    column_attnums smallint[];
+    period_attnums smallint[];
+    idx integer;
+    constraint_record record;
+    pass integer;
+    sql text;
+    alter_cmds text[];
+    unique_index regclass;
+    exclude_index regclass;
+    unique_sql text;
+    exclude_sql text;
+BEGIN
+    IF table_name IS NULL THEN
+        RAISE EXCEPTION 'no table name specified';
+    END IF;
+
+    /* Always serialize operations on our catalogs */
+    PERFORM periods._serialize(table_name);
+
+    SELECT p.*
+    INTO period_row
+    FROM periods.periods AS p
+    WHERE (p.table_name, p.period_name) = (table_name, period_name);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'period "%" does not exist', period_name;
+    END IF;
+
+    /* SYSTEM_TIME is not allowed in UNIQUE constraints. SQL:2016 11.7 SR 5)b) */
+    IF period_name = 'system_time' THEN
+        RAISE EXCEPTION 'periods for SYSTEM_TIME are not allowed in UNIQUE keys';
+    END IF;
+
+    /* For convenience, put the period's attnums in an array */
+    period_attnums := ARRAY[
+        (SELECT a.attnum FROM pg_catalog.pg_attribute AS a WHERE (a.attrelid, a.attname) = (period_row.table_name, period_row.start_column_name)),
+        (SELECT a.attnum FROM pg_catalog.pg_attribute AS a WHERE (a.attrelid, a.attname) = (period_row.table_name, period_row.end_column_name))
+    ];
+
+    /* Get attnums from column names */
+    SELECT array_agg(a.attnum ORDER BY n.ordinality)
+    INTO column_attnums
+    FROM unnest(column_names) WITH ORDINALITY AS n (name, ordinality)
+    LEFT JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attname) = (table_name, n.name);
+
+    /* System columns are not allowed */
+    IF 0 > ANY (column_attnums) THEN
+        RAISE EXCEPTION 'index creation on system columns is not supported';
+    END IF;
+
+    /* Report if any columns weren't found */
+    idx := array_position(column_attnums, NULL);
+    IF idx IS NOT NULL THEN
+        RAISE EXCEPTION 'column "%" does not exist', column_names[idx];
+    END IF;
+
+    /* Make sure the period columns aren't also in the normal columns */
+    IF period_row.start_column_name = ANY (column_names) THEN
+        RAISE EXCEPTION 'column "%" specified twice', period_row.start_column_name;
+    END IF;
+    IF period_row.end_column_name = ANY (column_names) THEN
+        RAISE EXCEPTION 'column "%" specified twice', period_row.end_column_name;
+    END IF;
+
+    /*
+     * Columns belonging to a SYSTEM_TIME period are not allowed in a UNIQUE
+     * key. SQL:2016 11.7 SR 5)b)
+     */
+    IF EXISTS (
+        SELECT FROM periods.periods AS p
+        WHERE (p.table_name, p.period_name) = (period_row.table_name, 'system_time')
+          AND ARRAY[p.start_column_name, p.end_column_name] && column_names)
+    THEN
+        RAISE EXCEPTION 'columns in period for SYSTEM_TIME are not allowed in UNIQUE keys';
+    END IF;
+
+    /* If we were given a unique constraint to use, look it up and make sure it matches */
+    SELECT format('UNIQUE (%s)', string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality))
+    INTO unique_sql
+    FROM unnest(column_names || period_row.start_column_name || period_row.end_column_name) WITH ORDINALITY AS u (column_name, ordinality);
+
+    IF unique_constraint IS NOT NULL THEN
+        SELECT c.oid, c.contype, c.condeferrable, c.conkey
+        INTO constraint_record
+        FROM pg_catalog.pg_constraint AS c
+        WHERE (c.conrelid, c.conname) = (table_name, unique_constraint);
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'constraint "%" does not exist', unique_constraint;
+        END IF;
+
+        IF constraint_record.contype NOT IN ('p', 'u') THEN
+            RAISE EXCEPTION 'constraint "%" is not a PRIMARY KEY or UNIQUE KEY', unique_constraint;
+        END IF;
+
+        IF constraint_record.condeferrable THEN
+            /* SQL:2016 11.8 SR 5 */
+            RAISE EXCEPTION 'constraint "%" must not be DEFERRABLE', unique_constraint;
+        END IF;
+
+        IF NOT constraint_record.conkey = column_attnums || period_attnums THEN
+            RAISE EXCEPTION 'constraint "%" does not match', unique_constraint;
+        END IF;
+
+        /* Looks good, let's use it. */
+    END IF;
+
+    /*
+     * If we were given an exclude constraint to use, look it up and make sure
+     * it matches.  We do that by generating the text that we expect
+     * pg_get_constraintdef() to output and compare against that instead of
+     * trying to deal with the internally stored components like we did for the
+     * UNIQUE constraint.
+     *
+     * We will use this same text to create the constraint if it doesn't exist.
+     */
+    DECLARE
+        withs text[];
+    BEGIN
+        SELECT array_agg(format('%I WITH =', column_name) ORDER BY n.ordinality)
+        INTO withs
+        FROM unnest(column_names) WITH ORDINALITY AS n (column_name, ordinality);
+
+        withs := withs || format('%s(%I, %I, ''[)''::text) WITH &&',
+            period_row.range_type, period_row.start_column_name, period_row.end_column_name);
+
+        exclude_sql := format('EXCLUDE USING gist (%s)', array_to_string(withs, ', '));
+    END;
+
+    IF exclude_constraint IS NOT NULL THEN
+        SELECT c.oid, c.contype, c.condeferrable, pg_catalog.pg_get_constraintdef(c.oid) AS definition
+        INTO constraint_record
+        FROM pg_catalog.pg_constraint AS c
+        WHERE (c.conrelid, c.conname) = (table_name, exclude_constraint);
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'constraint "%" does not exist', exclude_constraint;
+        END IF;
+
+        IF constraint_record.contype <> 'x' THEN
+            RAISE EXCEPTION 'constraint "%" is not an EXCLUDE constraint', exclude_constraint;
+        END IF;
+
+        IF constraint_record.condeferrable THEN
+            /* SQL:2016 11.8 SR 5 */
+            RAISE EXCEPTION 'constraint "%" must not be DEFERRABLE', exclude_constraint;
+        END IF;
+
+        IF constraint_record.definition <> exclude_sql THEN
+            RAISE EXCEPTION 'constraint "%" does not match', exclude_constraint;
+        END IF;
+
+        /* Looks good, let's use it. */
+    END IF;
+
+    /*
+     * Generate a name for the unique constraint.  We don't have to worry about
+     * concurrency here because all period ddl commands lock the periods table.
+     */
+    IF key_name IS NULL THEN
+        key_name := periods._choose_name(
+            ARRAY[(SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.oid = table_name)]
+                || column_names
+                || ARRAY[period_name]);
+    END IF;
+    pass := 0;
+    WHILE EXISTS (
+       SELECT FROM periods.unique_keys AS uk
+       WHERE uk.key_name = key_name || CASE WHEN pass > 0 THEN '_' || pass::text ELSE '' END)
+    LOOP
+       pass := pass + 1;
+    END LOOP;
+    key_name := key_name || CASE WHEN pass > 0 THEN '_' || pass::text ELSE '' END;
+
+    /* Time to make the underlying constraints */
+    alter_cmds := '{}';
+    IF unique_constraint IS NULL THEN
+        alter_cmds := alter_cmds || ('ADD ' || unique_sql);
+    END IF;
+
+    IF exclude_constraint IS NULL THEN
+        alter_cmds := alter_cmds || ('ADD ' || exclude_sql);
+    END IF;
+
+    IF alter_cmds <> '{}' THEN
+        SELECT format('ALTER TABLE %I.%I %s', n.nspname, c.relname, array_to_string(alter_cmds, ', '))
+        INTO sql
+        FROM pg_catalog.pg_class AS c
+        JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE c.oid = table_name;
+
+        EXECUTE sql;
+    END IF;
+
+    /* If we don't already have a unique_constraint, it must be the one with the highest oid */
+    IF unique_constraint IS NULL THEN
+        SELECT c.conname, c.conindid
+        INTO unique_constraint, unique_index
+        FROM pg_catalog.pg_constraint AS c
+        WHERE (c.conrelid, c.contype) = (table_name, 'u')
+        ORDER BY oid DESC
+        LIMIT 1;
+    END IF;
+
+    /* If we don't already have an exclude_constraint, it must be the one with the highest oid */
+    IF exclude_constraint IS NULL THEN
+        SELECT c.conname, c.conindid
+        INTO exclude_constraint, exclude_index
+        FROM pg_catalog.pg_constraint AS c
+        WHERE (c.conrelid, c.contype) = (table_name, 'x')
+        ORDER BY oid DESC
+        LIMIT 1;
+    END IF;
+
+    INSERT INTO periods.unique_keys (key_name, table_name, column_names, period_name, unique_constraint, exclude_constraint)
+    VALUES (key_name, table_name, column_names, period_name, unique_constraint, exclude_constraint);
+
+    RETURN key_name;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION periods.rename_following()
+ RETURNS event_trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    r record;
+    sql text;
+BEGIN
+    /*
+     * Anything that is stored by reg* type will auto-adjust, but anything we
+     * store by name will need to be updated after a rename. One way to do this
+     * is to recreate the constraints we have and pull new names out that way.
+     * If we are unable to do something like that, we must raise an exception.
+     */
+
+    ---
+    --- periods
+    ---
+
+    /*
+     * Start and end columns of a period can be found by the bounds check
+     * constraint.
+     */
+    FOR sql IN
+        SELECT pg_catalog.format('UPDATE periods.periods SET start_column_name = %L, end_column_name = %L WHERE (table_name, period_name) = (%L::regclass, %L)',
+            sa.attname, ea.attname, p.table_name, p.period_name)
+        FROM periods.periods AS p
+        JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (p.table_name, p.bounds_check_constraint)
+        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name
+        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name
+        WHERE (p.start_column_name, p.end_column_name) <> (sa.attname, ea.attname)
+          AND pg_catalog.pg_get_constraintdef(c.oid) = format('CHECK ((%I < %I))', sa.attname, ea.attname)
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    /*
+     * Inversely, the bounds check constraint can be retrieved via the start
+     * and end columns.
+     */
+    FOR sql IN
+        SELECT pg_catalog.format('UPDATE periods.periods SET bounds_check_constraint = %L WHERE (table_name, period_name) = (%L::regclass, %L)',
+            c.conname, p.table_name, p.period_name)
+        FROM periods.periods AS p
+        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name
+        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name
+        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name
+        WHERE p.bounds_check_constraint <> c.conname
+          AND pg_catalog.pg_get_constraintdef(c.oid) = format('CHECK ((%I < %I))', sa.attname, ea.attname)
+          AND (p.start_column_name, p.end_column_name) = (sa.attname, ea.attname)
+          AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (p.table_name, p.bounds_check_constraint))
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    ---
+    --- system_time_periods
+    ---
+
+    FOR sql IN
+        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET infinity_check_constraint = %L WHERE table_name = %L::regclass',
+            c.conname, p.table_name)
+        FROM periods.periods AS p
+        JOIN periods.system_time_periods AS stp ON (stp.table_name, stp.period_name) = (p.table_name, p.period_name)
+        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name
+        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name
+        WHERE stp.infinity_check_constraint <> c.conname
+          AND pg_catalog.pg_get_constraintdef(c.oid) = format('CHECK ((%I = ''infinity''::%s))', ea.attname, format_type(ea.atttypid, ea.atttypmod))
+          AND p.end_column_name = ea.attname
+          AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (stp.table_name, stp.infinity_check_constraint))
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    FOR sql IN
+        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET generated_always_trigger = %L WHERE table_name = %L::regclass',
+            t.tgname, stp.table_name)
+        FROM periods.system_time_periods AS stp
+        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = stp.table_name
+        WHERE t.tgname <> stp.generated_always_trigger
+          AND t.tgfoid = 'periods.generated_always_as_row_start_end()'::regprocedure
+          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.generated_always_trigger))
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    FOR sql IN
+        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET write_history_trigger = %L WHERE table_name = %L::regclass',
+            t.tgname, stp.table_name)
+        FROM periods.system_time_periods AS stp
+        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = stp.table_name
+        WHERE t.tgname <> stp.write_history_trigger
+          AND t.tgfoid = 'periods.write_history()'::regprocedure
+          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.write_history_trigger))
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    FOR sql IN
+        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET truncate_trigger = %L WHERE table_name = %L::regclass',
+            t.tgname, stp.table_name)
+        FROM periods.system_time_periods AS stp
+        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = stp.table_name
+        WHERE t.tgname <> stp.truncate_trigger
+          AND t.tgfoid = 'periods.truncate_system_versioning()'::regprocedure
+          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.truncate_trigger))
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    /*
+     * We can't reliably find out what a column was renamed to, so just error
+     * out in this case.
+     */
+    FOR r IN
+        SELECT stp.table_name, u.column_name
+        FROM periods.system_time_periods AS stp
+        CROSS JOIN LATERAL unnest(stp.excluded_column_names) AS u (column_name)
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_attribute AS a
+            WHERE (a.attrelid, a.attname) = (stp.table_name, u.column_name))
+    LOOP
+        RAISE EXCEPTION 'cannot drop or rename column "%" on table "%" because it is excluded from SYSTEM VERSIONING',
+            r.column_name, r.table_name;
+    END LOOP;
+
+    ---
+    --- for_portion_views
+    ---
+
+    FOR sql IN
+        SELECT pg_catalog.format('UPDATE periods.for_portion_views SET trigger_name = %L WHERE (table_name, period_name) = (%L::regclass, %L)',
+            t.tgname, fpv.table_name, fpv.period_name)
+        FROM periods.for_portion_views AS fpv
+        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = fpv.view_name
+        WHERE t.tgname <> fpv.trigger_name
+          AND t.tgfoid = 'periods.update_portion_of()'::regprocedure
+          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (fpv.table_name, fpv.trigger_name))
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    ---
+    --- unique_keys
+    ---
+
+    FOR sql IN
+        SELECT format('UPDATE periods.unique_keys SET column_names = %L WHERE key_name = %L',
+            a.column_names, uk.key_name)
+        FROM periods.unique_keys AS uk
+        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
+        JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (uk.table_name, uk.unique_constraint)
+        JOIN LATERAL (
+            SELECT array_agg(a.attname ORDER BY u.ordinality) AS column_names
+            FROM unnest(c.conkey) WITH ORDINALITY AS u (attnum, ordinality)
+            JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attnum) = (uk.table_name, u.attnum)
+            WHERE a.attname NOT IN (p.start_column_name, p.end_column_name)
+            ) AS a ON true
+        WHERE uk.column_names <> a.column_names
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    FOR sql IN
+        SELECT format('UPDATE periods.unique_keys SET unique_constraint = %L WHERE key_name = %L',
+            c.conname, uk.key_name)
+        FROM periods.unique_keys AS uk
+        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
+        CROSS JOIN LATERAL unnest(uk.column_names || ARRAY[p.start_column_name, p.end_column_name]) WITH ORDINALITY AS u (column_name, ordinality)
+        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = uk.table_name
+        WHERE NOT EXISTS (SELECT FROM pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (uk.table_name, uk.unique_constraint))
+        GROUP BY uk.key_name, c.oid, c.conname
+        HAVING format('UNIQUE (%s)', string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)) = pg_catalog.pg_get_constraintdef(c.oid)
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    FOR sql IN
+        SELECT format('UPDATE periods.unique_keys SET exclude_constraint = %L WHERE key_name = %L',
+            c.conname, uk.key_name)
+        FROM periods.unique_keys AS uk
+        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
+        CROSS JOIN LATERAL unnest(uk.column_names) WITH ORDINALITY AS u (column_name, ordinality)
+        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = uk.table_name
+        WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (uk.table_name, uk.exclude_constraint))
+        GROUP BY uk.key_name, c.oid, c.conname, p.range_type, p.start_column_name, p.end_column_name
+        HAVING format('EXCLUDE USING gist (%s, %s(%I, %I, ''[)''::text) WITH &&)',
+                      string_agg(quote_ident(u.column_name) || ' WITH =', ', ' ORDER BY u.ordinality),
+                      p.range_type,
+                      p.start_column_name,
+                      p.end_column_name) = pg_catalog.pg_get_constraintdef(c.oid)
+    LOOP
+        EXECUTE sql;
+    END LOOP;
+
+    ---
+    --- foreign_keys
+    ---
+
+    /*
+     * We can't reliably find out what a column was renamed to, so just error
+     * out in this case.
+     */
+    FOR r IN
+        SELECT fk.key_name, fk.table_name, u.column_name
+        FROM periods.foreign_keys AS fk
+        CROSS JOIN LATERAL unnest(fk.column_names) AS u (column_name)
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_attribute AS a
+            WHERE (a.attrelid, a.attname) = (fk.table_name, u.column_name))
+    LOOP
+        RAISE EXCEPTION 'cannot drop or rename column "%" on table "%" because it is used in period foreign key "%"',
+            r.column_name, r.table_name, r.key_name;
+    END LOOP;
+
+    /*
+     * Since there can be multiple foreign keys, there is no reliable way to
+     * know which trigger might belong to what, so just error out.
+     */
+    FOR r IN
+        SELECT fk.key_name, fk.table_name, fk.fk_insert_trigger AS trigger_name
+        FROM periods.foreign_keys AS fk
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_trigger AS t
+            WHERE (t.tgrelid, t.tgname) = (fk.table_name, fk.fk_insert_trigger))
+        UNION ALL
+        SELECT fk.key_name, fk.table_name, fk.fk_update_trigger AS trigger_name
+        FROM periods.foreign_keys AS fk
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_trigger AS t
+            WHERE (t.tgrelid, t.tgname) = (fk.table_name, fk.fk_update_trigger))
+        UNION ALL
+        SELECT fk.key_name, uk.table_name, fk.uk_update_trigger AS trigger_name
+        FROM periods.foreign_keys AS fk
+        JOIN periods.unique_keys AS uk ON uk.key_name = fk.unique_key
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_trigger AS t
+            WHERE (t.tgrelid, t.tgname) = (uk.table_name, fk.uk_update_trigger))
+        UNION ALL
+        SELECT fk.key_name, uk.table_name, fk.uk_delete_trigger AS trigger_name
+        FROM periods.foreign_keys AS fk
+        JOIN periods.unique_keys AS uk ON uk.key_name = fk.unique_key
+        WHERE NOT EXISTS (
+            SELECT FROM pg_catalog.pg_trigger AS t
+            WHERE (t.tgrelid, t.tgname) = (uk.table_name, fk.uk_delete_trigger))
+    LOOP
+        RAISE EXCEPTION 'cannot drop or rename trigger "%" on table "%" because it is used in period foreign key "%"',
+            r.trigger_name, r.table_name, r.key_name;
+    END LOOP;
+
+    ---
+    --- system_versioning
+    ---
+
+    /* Nothing to do here */
 END;
 $function$;
