@@ -14,9 +14,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
 `ALTER EXTENSION periods UPDATE`.
 
+### Removed
+
+  - Support for PostgreSQL 9.5 and 9.6.  Fresh installations of 1.2.4 rely on
+    `CREATE EXTENSION` applying the base 1.2 script plus the update script,
+    which PostgreSQL supports since version 10.
+
 ### Added
 
   - New regression test file `bugfixes` covering everything below.
+
+  - `FOR PORTION OF` updates now work on tables whose primary key does not
+    regenerate itself (e.g. a temporal `PRIMARY KEY (id, start, end)`), and on
+    tables with array or composite columns — including updating such columns
+    through the view.  Array lower bounds other than 1 are not preserved in
+    the re-inserted slices (JSON carries none).
 
 ### Fixed
 
