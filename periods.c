@@ -1,3 +1,4 @@
+// Model-output: Claude Fable 5
 #include "postgres.h"
 #include "fmgr.h"
 
@@ -69,6 +70,7 @@ typedef struct InsertHistoryPlanEntry
 	Oid			history_relid;	/* the hash key; must be first */
 	char		schemaname[NAMEDATALEN];
 	char		tablename[NAMEDATALEN];
+	Oid			paramtype;		/* composite type the plan's $1 was prepared with */
 	SPIPlanPtr	qplan;
 } InsertHistoryPlanEntry;
 
@@ -525,6 +527,7 @@ insert_into_history(Relation history_rel, HeapTuple history_tuple)
 	char	   *schemaname = SPI_getnspname(history_rel);
 	char	   *tablename = SPI_getrelname(history_rel);
 	Oid			history_relid = history_rel->rd_id;
+	Oid			type = HeapTupleHeaderGetTypeId(history_tuple->t_data);
 	Datum		value;
 	int			ret;
 
@@ -541,28 +544,50 @@ insert_into_history(Relation history_rel, HeapTuple history_tuple)
 			HASH_ENTER,
 			&found);
 
-	/* If we didn't find it or the name changed, re-plan it */
-	if (!found ||
-		!strcmp(hentry->schemaname, schemaname) ||
-		!strcmp(hentry->tablename, tablename))
+	/* dynahash only copies the key; make a fresh entry presentable */
+	if (!found)
+	{
+		hentry->schemaname[0] = '\0';
+		hentry->tablename[0] = '\0';
+		hentry->paramtype = InvalidOid;
+		hentry->qplan = NULL;
+	}
+
+	/*
+	 * If there is no plan yet, or the table's qualified name or the tuple's
+	 * composite type changed since it was prepared, re-plan it.
+	 */
+	if (hentry->qplan == NULL ||
+		strcmp(hentry->schemaname, schemaname) != 0 ||
+		strcmp(hentry->tablename, tablename) != 0 ||
+		hentry->paramtype != type)
 	{
 		StringInfo	buf = makeStringInfo();
-		Oid			type = HeapTupleHeaderGetTypeId(history_tuple->t_data);
+		SPIPlanPtr	qplan;
 
 		appendStringInfo(buf, "INSERT INTO %s VALUES (($1).*)",
 				quote_qualified_identifier(schemaname, tablename));
 
-		hentry->history_relid = history_relid;
-		strlcpy(hentry->schemaname, schemaname, sizeof(hentry->schemaname));
-		strlcpy(hentry->tablename, tablename, sizeof(hentry->tablename));
-		hentry->qplan = SPI_prepare(buf->data, 1, &type);
-		if (hentry->qplan == NULL)
+		qplan = SPI_prepare(buf->data, 1, &type);
+		if (qplan == NULL)
 			elog(ERROR, "SPI_prepare returned %s for %s",
 				 SPI_result_code_string(SPI_result), buf->data);
 
-		ret = SPI_keepplan(hentry->qplan);
+		ret = SPI_keepplan(qplan);
 		if (ret != 0)
 			elog(ERROR, "SPI_keepplan returned %s", SPI_result_code_string(ret));
+
+		/*
+		 * Replace the previous plan only once its successor is safely kept, so
+		 * that erroring out above cannot leave a freed plan in the cache.
+		 */
+		if (hentry->qplan != NULL)
+			SPI_freeplan(hentry->qplan);
+
+		strlcpy(hentry->schemaname, schemaname, sizeof(hentry->schemaname));
+		strlcpy(hentry->tablename, tablename, sizeof(hentry->tablename));
+		hentry->paramtype = type;
+		hentry->qplan = qplan;
 	}
 
 	/* Do the INSERT */
