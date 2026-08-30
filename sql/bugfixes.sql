@@ -614,3 +614,29 @@ DROP ROLE bug14_pub_owner;
 DROP ROLE bug14_probe;
 
 SET ROLE TO periods_unprivileged_user;
+
+/*
+ * sol.md D6: add_system_versioning() adopted any same-named pg_class entry as
+ * the history table without checking relkind.  A view happened to fail the
+ * attribute-compatibility check (views have no system columns in
+ * pg_attribute), a materialized view sailed through it and died later on
+ * generated 'REVOKE ALL ON ERROR ...' SQL -- both errors pointing far away
+ * from the actual problem.
+ */
+
+CREATE TABLE d6 (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('d6');
+
+CREATE VIEW d6_history AS SELECT * FROM d6;
+SELECT periods.add_system_versioning('d6');
+DROP VIEW d6_history;
+
+CREATE MATERIALIZED VIEW d6_history AS SELECT * FROM d6;
+SELECT periods.add_system_versioning('d6');
+DROP MATERIALIZED VIEW d6_history;
+
+/* Adopting a legitimate pre-existing plain table must keep working */
+CREATE TABLE d6_history (LIKE d6);
+SELECT periods.add_system_versioning('d6');
+SELECT periods.drop_system_versioning('d6', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE d6;

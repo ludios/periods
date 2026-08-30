@@ -1370,3 +1370,46 @@ DROP ROLE "Bug14 Successor";
 DROP ROLE bug14_pub_owner;
 DROP ROLE bug14_probe;
 SET ROLE TO periods_unprivileged_user;
+/*
+ * sol.md D6: add_system_versioning() adopted any same-named pg_class entry as
+ * the history table without checking relkind.  A view happened to fail the
+ * attribute-compatibility check (views have no system columns in
+ * pg_attribute), a materialized view sailed through it and died later on
+ * generated 'REVOKE ALL ON ERROR ...' SQL -- both errors pointing far away
+ * from the actual problem.
+ */
+CREATE TABLE d6 (id integer PRIMARY KEY, val text);
+SELECT periods.add_system_time_period('d6');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+CREATE VIEW d6_history AS SELECT * FROM d6;
+SELECT periods.add_system_versioning('d6');
+ERROR:  base table "d6" and history table "d6_history" are not compatible
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 126 at RAISE
+DROP VIEW d6_history;
+CREATE MATERIALIZED VIEW d6_history AS SELECT * FROM d6;
+SELECT periods.add_system_versioning('d6');
+ERROR:  syntax error at or near "d6_history"
+LINE 1: REVOKE ALL ON ERROR d6_history FROM periods_unprivileged_use...
+                            ^
+QUERY:  REVOKE ALL ON ERROR d6_history FROM periods_unprivileged_user
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 270 at EXECUTE
+DROP MATERIALIZED VIEW d6_history;
+/* Adopting a legitimate pre-existing plain table must keep working */
+CREATE TABLE d6_history (LIKE d6);
+SELECT periods.add_system_versioning('d6');
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
+SELECT periods.drop_system_versioning('d6', drop_behavior => 'CASCADE', purge => true);
+ drop_system_versioning 
+------------------------
+ t
+(1 row)
+
+DROP TABLE d6;
