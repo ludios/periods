@@ -1208,3 +1208,148 @@ SELECT periods.drop_system_versioning('t2_legacy', drop_behavior => 'CASCADE', p
 (1 row)
 
 DROP TABLE t2_legacy;
+/*
+ * sol.md D2 (upstream #14): add_system_versioning() and health_checks()
+ * formatted role names by applying %I to a regrole rendering, which is
+ * already quoted, so any owner whose name needs quoting was looked up as a
+ * role with literal double quotes in its name.  The grant-propagation loop
+ * also rendered the PUBLIC pseudo-role (grantee OID 0) as "-", which is not
+ * valid GRANT syntax.
+ */
+RESET ROLE;
+CREATE ROLE "Bug14 Owner";
+CREATE ROLE "Bug14 Successor";
+CREATE ROLE bug14_pub_owner;
+CREATE ROLE bug14_probe;
+CREATE TABLE b14 (id integer PRIMARY KEY, val text, vf integer, vt integer);
+ALTER TABLE b14 OWNER TO "Bug14 Owner";
+SELECT periods.add_system_time_period('b14');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.add_system_versioning('b14');
+ERROR:  role ""Bug14 Owner"" does not exist
+CONTEXT:  SQL statement "ALTER TABLE public.b14_history OWNER TO """Bug14 Owner""""
+PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 147 at EXECUTE
+/* The history objects must all belong to the table's owner */
+SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+FROM pg_catalog.pg_class AS c
+WHERE c.relname IN ('b14', 'b14_history', 'b14_with_history')
+ORDER BY c.relname;
+ relname |    owner    
+---------+-------------
+ b14     | Bug14 Owner
+(1 row)
+
+SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
+FROM pg_catalog.pg_proc AS p
+WHERE p.proname LIKE 'b14\_\_%'
+ORDER BY p.proname;
+ proname | owner 
+---------+-------
+(0 rows)
+
+/* health_checks' ownership realignment must handle quoted names, too,
+ * including the FOR PORTION OF view */
+SELECT periods.add_period('b14', 'validity', 'vf', 'vt');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_for_portion_view('b14', 'validity');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+ALTER TABLE b14 OWNER TO "Bug14 Successor";
+ERROR:  role ""Bug14 Successor"" does not exist
+CONTEXT:  SQL statement "ALTER VIEW b14__for_portion_of_validity OWNER TO """Bug14 Successor""""
+PL/pgSQL function periods.health_checks() line 76 at EXECUTE
+SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+FROM pg_catalog.pg_class AS c
+WHERE c.relname IN ('b14', 'b14_history', 'b14_with_history', 'b14__for_portion_of_validity')
+ORDER BY c.relname;
+           relname            |    owner    
+------------------------------+-------------
+ b14                          | Bug14 Owner
+ b14__for_portion_of_validity | Bug14 Owner
+(2 rows)
+
+SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
+FROM pg_catalog.pg_proc AS p
+WHERE p.proname LIKE 'b14\_\_%'
+ORDER BY p.proname;
+ proname | owner 
+---------+-------
+(0 rows)
+
+SELECT periods.drop_for_portion_view('b14', 'validity');
+ drop_for_portion_view 
+-----------------------
+ t
+(1 row)
+
+/* Reconnecting a retained history table goes through the adoption branch */
+SELECT periods.drop_system_versioning('b14', drop_behavior => 'CASCADE');
+NOTICE:  table b14 does not have SYSTEM VERSIONING
+ drop_system_versioning 
+------------------------
+ f
+(1 row)
+
+SELECT periods.add_system_versioning('b14');
+ERROR:  role ""Bug14 Owner"" does not exist
+CONTEXT:  SQL statement "ALTER TABLE public.b14_history OWNER TO """Bug14 Owner""""
+PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 147 at EXECUTE
+SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+FROM pg_catalog.pg_class AS c
+WHERE c.relname IN ('b14_history', 'b14_with_history')
+ORDER BY c.relname;
+ relname | owner 
+---------+-------
+(0 rows)
+
+SELECT periods.drop_system_versioning('b14', drop_behavior => 'CASCADE', purge => true);
+NOTICE:  table b14 does not have SYSTEM VERSIONING
+ drop_system_versioning 
+------------------------
+ f
+(1 row)
+
+DROP TABLE b14;
+/* A SELECT grant to PUBLIC on the base table must propagate, not break */
+CREATE TABLE b14pub (id integer PRIMARY KEY, val text);
+ALTER TABLE b14pub OWNER TO bug14_pub_owner;
+GRANT SELECT ON b14pub TO PUBLIC;
+SELECT periods.add_system_time_period('b14pub');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.add_system_versioning('b14pub');
+NOTICE:  history table "b14pub_history" created for "b14pub", be sure to index it properly
+ERROR:  syntax error at or near "-"
+LINE 1: ...ub_history, public.b14pub_with_history TO bug14_pub_owner, -
+                                                                      ^
+QUERY:  GRANT SELECT ON TABLE public.b14pub_history, public.b14pub_with_history TO bug14_pub_owner, -
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 280 at EXECUTE
+SELECT pg_catalog.has_table_privilege('bug14_probe', 'b14pub_history', 'SELECT') AS probe_sees_history;
+ERROR:  relation "b14pub_history" does not exist
+SELECT periods.drop_system_versioning('b14pub', drop_behavior => 'CASCADE', purge => true);
+NOTICE:  table b14pub does not have SYSTEM VERSIONING
+ drop_system_versioning 
+------------------------
+ f
+(1 row)
+
+DROP TABLE b14pub;
+DROP ROLE "Bug14 Owner";
+DROP ROLE "Bug14 Successor";
+DROP ROLE bug14_pub_owner;
+DROP ROLE bug14_probe;
+SET ROLE TO periods_unprivileged_user;

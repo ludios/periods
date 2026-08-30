@@ -540,3 +540,77 @@ SELECT id, val, system_time_start = 'epoch' AS forged FROM t2_legacy;
 SELECT count(*) AS history_rows FROM t2_legacy_history;
 SELECT periods.drop_system_versioning('t2_legacy', drop_behavior => 'CASCADE', purge => true);
 DROP TABLE t2_legacy;
+
+/*
+ * sol.md D2 (upstream #14): add_system_versioning() and health_checks()
+ * formatted role names by applying %I to a regrole rendering, which is
+ * already quoted, so any owner whose name needs quoting was looked up as a
+ * role with literal double quotes in its name.  The grant-propagation loop
+ * also rendered the PUBLIC pseudo-role (grantee OID 0) as "-", which is not
+ * valid GRANT syntax.
+ */
+
+RESET ROLE;
+
+CREATE ROLE "Bug14 Owner";
+CREATE ROLE "Bug14 Successor";
+CREATE ROLE bug14_pub_owner;
+CREATE ROLE bug14_probe;
+
+CREATE TABLE b14 (id integer PRIMARY KEY, val text, vf integer, vt integer);
+ALTER TABLE b14 OWNER TO "Bug14 Owner";
+SELECT periods.add_system_time_period('b14');
+SELECT periods.add_system_versioning('b14');
+
+/* The history objects must all belong to the table's owner */
+SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+FROM pg_catalog.pg_class AS c
+WHERE c.relname IN ('b14', 'b14_history', 'b14_with_history')
+ORDER BY c.relname;
+SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
+FROM pg_catalog.pg_proc AS p
+WHERE p.proname LIKE 'b14\_\_%'
+ORDER BY p.proname;
+
+/* health_checks' ownership realignment must handle quoted names, too,
+ * including the FOR PORTION OF view */
+SELECT periods.add_period('b14', 'validity', 'vf', 'vt');
+SELECT periods.add_for_portion_view('b14', 'validity');
+ALTER TABLE b14 OWNER TO "Bug14 Successor";
+SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+FROM pg_catalog.pg_class AS c
+WHERE c.relname IN ('b14', 'b14_history', 'b14_with_history', 'b14__for_portion_of_validity')
+ORDER BY c.relname;
+SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
+FROM pg_catalog.pg_proc AS p
+WHERE p.proname LIKE 'b14\_\_%'
+ORDER BY p.proname;
+SELECT periods.drop_for_portion_view('b14', 'validity');
+
+/* Reconnecting a retained history table goes through the adoption branch */
+SELECT periods.drop_system_versioning('b14', drop_behavior => 'CASCADE');
+SELECT periods.add_system_versioning('b14');
+SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+FROM pg_catalog.pg_class AS c
+WHERE c.relname IN ('b14_history', 'b14_with_history')
+ORDER BY c.relname;
+
+SELECT periods.drop_system_versioning('b14', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE b14;
+
+/* A SELECT grant to PUBLIC on the base table must propagate, not break */
+CREATE TABLE b14pub (id integer PRIMARY KEY, val text);
+ALTER TABLE b14pub OWNER TO bug14_pub_owner;
+GRANT SELECT ON b14pub TO PUBLIC;
+SELECT periods.add_system_time_period('b14pub');
+SELECT periods.add_system_versioning('b14pub');
+SELECT pg_catalog.has_table_privilege('bug14_probe', 'b14pub_history', 'SELECT') AS probe_sees_history;
+SELECT periods.drop_system_versioning('b14pub', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE b14pub;
+
+DROP ROLE "Bug14 Owner";
+DROP ROLE "Bug14 Successor";
+DROP ROLE bug14_pub_owner;
+DROP ROLE bug14_probe;
+
+SET ROLE TO periods_unprivileged_user;
