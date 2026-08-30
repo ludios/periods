@@ -1428,7 +1428,7 @@ FROM periods.periods AS p
 WHERE p.table_name = 'h2'::regclass;
  period_name | bounds_check_constraint 
 -------------+-------------------------
- system_time | h2_system_time_check
+ system_time | h2_custom_bounds
 (1 row)
 
 SELECT periods.drop_system_time_period('h2', purge => true);
@@ -1438,15 +1438,13 @@ SELECT periods.drop_system_time_period('h2', purge => true);
 (1 row)
 
 SELECT periods.add_period('h2', 'system_time', 'sts', 'ste', range_type => 'tstzrange');
- add_period 
-------------
- t
-(1 row)
-
+ERROR:  range_type may not be specified for SYSTEM_TIME periods
+CONTEXT:  PL/pgSQL function periods.add_period(regclass,name,name,name,regtype,name) line 48 at RAISE
 SELECT periods.drop_system_time_period('h2', purge => true);
+NOTICE:  period system_time not found on table h2
  drop_system_time_period 
 -------------------------
- t
+ f
 (1 row)
 
 DROP TABLE h2;

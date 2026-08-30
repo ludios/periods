@@ -2263,3 +2263,269 @@ BEGIN
     WHERE stp.table_name = table_name;
 END;
 $function$;
+
+/*
+ * add_period(..., 'system_time') silently discarded its range_type and
+ * bounds_check_constraint arguments.  The bounds constraint name is now
+ * forwarded to add_system_time_period(), which shares its find-or-create
+ * semantics; a range_type is rejected because SYSTEM_TIME derives the range
+ * type from the column datatype itself.  Otherwise identical to the 1.2
+ * original.
+ */
+CREATE OR REPLACE FUNCTION periods.add_period(
+    table_name regclass,
+    period_name name,
+    start_column_name name,
+    end_column_name name,
+    range_type regtype DEFAULT NULL,
+    bounds_check_constraint name DEFAULT NULL)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    table_name_only name;
+    kind "char";
+    persistence "char";
+    alter_commands text[] DEFAULT '{}';
+
+    start_attnum smallint;
+    start_type oid;
+    start_collation oid;
+    start_notnull boolean;
+
+    end_attnum smallint;
+    end_type oid;
+    end_collation oid;
+    end_notnull boolean;
+BEGIN
+    IF table_name IS NULL THEN
+        RAISE EXCEPTION 'no table name specified';
+    END IF;
+
+    IF period_name IS NULL THEN
+        RAISE EXCEPTION 'no period name specified';
+    END IF;
+
+    /* Always serialize operations on our catalogs */
+    PERFORM periods._serialize(table_name);
+
+    /*
+     * REFERENCES:
+     *     SQL:2016 11.27
+     */
+
+    /* Don't allow anything on system versioning history tables (this will be relaxed later) */
+    IF EXISTS (SELECT FROM periods.system_versioning AS sv WHERE sv.history_table_name = table_name) THEN
+        RAISE EXCEPTION 'history tables for SYSTEM VERSIONING cannot have periods';
+    END IF;
+
+    /* Period names are limited to lowercase alphanumeric characters for now */
+    period_name := lower(period_name);
+    IF period_name !~ '^[a-z_][0-9a-z_]*$' THEN
+        RAISE EXCEPTION 'only alphanumeric characters are currently allowed';
+    END IF;
+
+    IF period_name = 'system_time' THEN
+        IF range_type IS NOT NULL THEN
+            RAISE EXCEPTION 'range_type may not be specified for SYSTEM_TIME periods';
+        END IF;
+
+        RETURN periods.add_system_time_period(table_name, start_column_name, end_column_name,
+            bounds_check_constraint => bounds_check_constraint);
+    END IF;
+
+    /* Must be a regular persistent base table. SQL:2016 11.27 SR 2 */
+
+    SELECT c.relpersistence, c.relkind
+    INTO persistence, kind
+    FROM pg_catalog.pg_class AS c
+    WHERE c.oid = table_name;
+
+    IF kind <> 'r' THEN
+        /*
+         * The main reason partitioned tables aren't supported yet is simply
+         * because I haven't put any thought into it.
+         * Maybe it's trivial, maybe not.
+         */
+        IF kind = 'p' THEN
+            RAISE EXCEPTION 'partitioned tables are not supported yet';
+        END IF;
+
+        RAISE EXCEPTION 'relation % is not a table', $1;
+    END IF;
+
+    IF persistence <> 'p' THEN
+        /* We could probably accept unlogged tables but what's the point? */
+        RAISE EXCEPTION 'table "%" must be persistent', table_name;
+    END IF;
+
+    /*
+     * Check if period already exists.  Actually no other application time
+     * periods are allowed per spec, but we don't obey that.  We can have as
+     * many application time periods as we want.
+     *
+     * SQL:2016 11.27 SR 5.b
+     */
+    IF EXISTS (SELECT FROM periods.periods AS p WHERE (p.table_name, p.period_name) = (table_name, period_name)) THEN
+        RAISE EXCEPTION 'period for "%" already exists on table "%"', period_name, table_name;
+    END IF;
+
+    /*
+     * Although we are not creating a new object, the SQL standard says that
+     * periods are in the same namespace as columns, so prevent that.
+     *
+     * SQL:2016 11.27 SR 5.c
+     */
+    IF EXISTS (
+        SELECT FROM pg_catalog.pg_attribute AS a
+        WHERE (a.attrelid, a.attname) = (table_name, period_name))
+    THEN
+        RAISE EXCEPTION 'a column named "%" already exists for table "%"', period_name, table_name;
+    END IF;
+
+    /*
+     * Contrary to SYSTEM_TIME periods, the columns must exist already for
+     * application time periods.
+     *
+     * SQL:2016 11.27 SR 5.d
+     */
+
+    /* Get start column information */
+    SELECT a.attnum, a.atttypid, a.attcollation, a.attnotnull
+    INTO start_attnum, start_type, start_collation, start_notnull
+    FROM pg_catalog.pg_attribute AS a
+    WHERE (a.attrelid, a.attname) = (table_name, start_column_name);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'column "%" not found in table "%"', start_column_name, table_name;
+    END IF;
+
+    IF start_attnum < 0 THEN
+        RAISE EXCEPTION 'system columns cannot be used in periods';
+    END IF;
+
+    /* Get end column information */
+    SELECT a.attnum, a.atttypid, a.attcollation, a.attnotnull
+    INTO end_attnum, end_type, end_collation, end_notnull
+    FROM pg_catalog.pg_attribute AS a
+    WHERE (a.attrelid, a.attname) = (table_name, end_column_name);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'column "%" not found in table "%"', end_column_name, table_name;
+    END IF;
+
+    IF end_attnum < 0 THEN
+        RAISE EXCEPTION 'system columns cannot be used in periods';
+    END IF;
+
+    /*
+     * Verify compatibility of start/end columns.  The standard says these must
+     * be either date or timestamp, but we allow anything with a corresponding
+     * range type because why not.
+     *
+     * SQL:2016 11.27 SR 5.g
+     */
+    IF start_type <> end_type THEN
+        RAISE EXCEPTION 'start and end columns must be of same type';
+    END IF;
+
+    IF start_collation <> end_collation THEN
+        RAISE EXCEPTION 'start and end columns must be of same collation';
+    END IF;
+
+    /* Get the range type that goes with these columns */
+    IF range_type IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT FROM pg_catalog.pg_range AS r
+            WHERE (r.rngtypid, r.rngsubtype, r.rngcollation) = (range_type, start_type, start_collation))
+        THEN
+            RAISE EXCEPTION 'range "%" does not match data type "%"', range_type, start_type;
+        END IF;
+    ELSE
+        SELECT r.rngtypid
+        INTO range_type
+        FROM pg_catalog.pg_range AS r
+        JOIN pg_catalog.pg_opclass AS c ON c.oid = r.rngsubopc
+        WHERE (r.rngsubtype, r.rngcollation) = (start_type, start_collation)
+          AND c.opcdefault;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'no default range type for %', start_type::regtype;
+        END IF;
+    END IF;
+
+    /*
+     * Period columns must not be nullable.
+     *
+     * SQL:2016 11.27 SR 5.h
+     */
+    IF NOT start_notnull THEN
+        alter_commands := alter_commands || format('ALTER COLUMN %I SET NOT NULL', start_column_name);
+    END IF;
+    IF NOT end_notnull THEN
+        alter_commands := alter_commands || format('ALTER COLUMN %I SET NOT NULL', end_column_name);
+    END IF;
+
+    /*
+     * Find and appropriate a CHECK constraint to make sure that start < end.
+     * Create one if necessary.
+     *
+     * SQL:2016 11.27 GR 2.b
+     */
+    DECLARE
+        condef CONSTANT text := format('CHECK ((%I < %I))', start_column_name, end_column_name);
+        context text;
+    BEGIN
+        IF bounds_check_constraint IS NOT NULL THEN
+            /* We were given a name, does it exist? */
+            SELECT pg_catalog.pg_get_constraintdef(c.oid)
+            INTO context
+            FROM pg_catalog.pg_constraint AS c
+            WHERE (c.conrelid, c.conname) = (table_name, bounds_check_constraint)
+              AND c.contype = 'c';
+
+            IF FOUND THEN
+                /* Does it match? */
+                IF context <> condef THEN
+                    RAISE EXCEPTION 'constraint "%" on table "%" does not match', bounds_check_constraint, table_name;
+                END IF;
+            ELSE
+                /* If it doesn't exist, we'll use the name for the one we create. */
+                alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', bounds_check_constraint, condef);
+            END IF;
+        ELSE
+            /* No name given, can we appropriate one? */
+            SELECT c.conname
+            INTO bounds_check_constraint
+            FROM pg_catalog.pg_constraint AS c
+            WHERE c.conrelid = table_name
+              AND c.contype = 'c'
+              AND pg_catalog.pg_get_constraintdef(c.oid) = condef;
+
+            /* Make our own then */
+            IF NOT FOUND THEN
+                SELECT c.relname
+                INTO table_name_only
+                FROM pg_catalog.pg_class AS c
+                WHERE c.oid = table_name;
+
+                bounds_check_constraint := periods._choose_name(ARRAY[table_name_only, period_name], 'check');
+                alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', bounds_check_constraint, condef);
+            END IF;
+        END IF;
+    END;
+
+    /* If we've created any work for ourselves, do it now */
+    IF alter_commands <> '{}' THEN
+        EXECUTE format('ALTER TABLE %s %s', table_name, array_to_string(alter_commands, ', '));
+    END IF;
+
+    INSERT INTO periods.periods (table_name, period_name, start_column_name, end_column_name, range_type, bounds_check_constraint)
+    VALUES (table_name, period_name, start_column_name, end_column_name, range_type, bounds_check_constraint);
+
+    RETURN true;
+END;
+$function$;
