@@ -189,6 +189,55 @@ loses fidelity for other types whose JSON form differs from their input literal.
 
 ---
 
+## 3. Critical — security (privilege escalation)
+
+These require the extension to be installed by a superuser (the default `CREATE EXTENSION periods`) and its
+functions to be callable by unprivileged roles — which they are, because nothing `REVOKE`s `EXECUTE` from `PUBLIC`.
+
+### 3.1 SQL injection via unvalidated period column names → arbitrary code as the definer **[reproduced: 18]**
+
+`add_system_time_period` accepts arbitrary start/end **column names** without validation (unlike the period *name*,
+which is regex-checked at [line 298](periods--1.2.sql#L298)). `add_system_versioning`
+([2554-2596](periods--1.2.sql#L2554)) then interpolates those names with `%I` **inside a single-quoted function-body
+literal**:
+
+```sql
+EXECUTE format($$ CREATE FUNCTION %1$I.%2$I(...) ... AS
+    'SELECT * FROM %1$I.%3$I WHERE %4$I <= $1 AND %5$I > $1' $$,
+    ..., period_row.start_column_name, period_row.end_column_name);
+```
+
+`quote_ident` escapes double quotes but **not the single quotes** that matter for the surrounding body literal, so a
+column named `a'; ALTER ROLE me SUPERUSER; --` closes the literal early and the rest runs as separate statements —
+executed by the `SECURITY DEFINER` (superuser) owner. Verified end-to-end: an unprivileged role went
+`rolsuper = f → t`.
+
+**Fix:** validate period column names (reject quotes) *and* stop building function bodies by literal interpolation —
+use dollar-quoting with a parameter or `format('%L', ...)` for the literal context; `%I` alone is not sufficient
+inside a string literal.
+
+### 3.2 `SECURITY DEFINER` functions have no `SET search_path` → function/operator hijack **[reproduced: 18]**
+
+None of the 19 `SECURITY DEFINER` functions pin `search_path`, and they call many unqualified functions/operators
+(`lower()` at [297](periods--1.2.sql#L297), `format`, `left`, `octet_length`, `string_agg`, `||`, casts, …). A caller
+who prepends their own schema to `search_path` and defines e.g. `lower(name)` running `ALTER ROLE me SUPERUSER` gets
+it executed as the superuser owner (the classic CVE-2018-1058 shape). Verified live: role went to superuser.
+
+**Fix:** add `SET search_path = pg_catalog, pg_temp` (or `= ''` with fully-qualified references) to every
+`SECURITY DEFINER` function.
+
+### 3.3 DDL functions are `PUBLIC`-executable with no ownership check **[reproduced: 18]**
+
+`add_period`, `add_system_time_period`, `add_system_versioning` (and siblings) never verify the caller owns
+`table_name`, and `EXECUTE` is never revoked from `PUBLIC`. A low-privileged user can therefore add
+constraints / `SET NOT NULL` / create triggers on tables they don't own, running as the definer. This is also the
+delivery vector that makes §3.1/§3.2 reachable.
+
+**Fix:** add an explicit ownership guard at the top of each mutating function (e.g. `pg_has_role(current_user,
+relowner, 'USAGE')`) and/or `REVOKE EXECUTE ... FROM PUBLIC`.
+
+---
+
 ## 4. High — the C code
 
 ### 4.1 Inverted plan-cache condition in `insert_into_history()` → per-write plan leak + stale plan on rename **[reproduced: 18]**
@@ -310,8 +359,9 @@ check (or `elog`) would harden against future catalog changes.
 1. **§2.1 `drop_period` wrong-row** and **§2.2 FK orphan (#27)** — silent integrity loss on core features; smallest,
    highest-value fixes (one predicate each, roughly).
 2. **§2.3 FOR PORTION OF (b) `contype='p'`** — one-line fix, prevents silent data corruption.
-3. **§4.1 C plan-cache** — small C fix, stops a real leak.
-4. **§2.3 (a)/(c)** and **§5.x** — larger design work on `update_portion_of` and the event-trigger invariants.
+3. **§3.1 SQL injection** / **§3.3 ownership+`PUBLIC`** / **§3.2 `search_path`** — the security trio; fix together.
+4. **§4.1 C plan-cache** — small C fix, stops a real leak.
+5. **§2.3 (a)/(c)** and **§5.x** — larger design work on `update_portion_of` and the event-trigger invariants.
 
 **Note on tests:** every bug above is invisible to the current suite. Worth adding regression cases for: a plain /
 composite-including-period PK with `FOR PORTION OF`; a nullable constrained column with `FOR PORTION OF`; an array
