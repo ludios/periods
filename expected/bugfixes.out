@@ -733,7 +733,7 @@ UPDATE fp_spk__for_portion_of_p SET val = 'b', s = 20, e = 30;
 ERROR:  duplicate key value violates unique constraint "fp_spk_pkey"
 DETAIL:  Key (id)=(1) already exists.
 CONTEXT:  SQL statement "INSERT INTO fp_spk (e, id, s, val) SELECT r.e, r.id, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_spk, '{"e": 20, "s": 10, "id": 1, "val": "a"}') AS r"
-PL/pgSQL function periods.update_portion_of() line 233 at EXECUTE
+PL/pgSQL function periods.update_portion_of() line 241 at EXECUTE
 SELECT id, val, s, e FROM fp_spk ORDER BY s;
  id | val | s  | e  
 ----+-----+----+----
@@ -1571,16 +1571,13 @@ INSERT INTO fp_uuid VALUES (1, 'a', '00000000-0000-0000-0000-000000000000',
 UPDATE fp_uuid__for_portion_of_p SET val = 'b',
     s = '30000000-0000-0000-0000-000000000000',
     e = '60000000-0000-0000-0000-000000000000';
-ERROR:  invalid input syntax for type uuid: ""00000000-0000-0000-0000-000000000000""
-LINE 1: VALUES (CAST('"00000000-0000-0000-0000-000000000000"' AS uui...
-                     ^
-QUERY:  VALUES (CAST('"00000000-0000-0000-0000-000000000000"' AS uuid) < CAST('"30000000-0000-0000-0000-000000000000"' AS uuid) AND         CAST('"30000000-0000-0000-0000-000000000000"' AS uuid) < CAST('"ffffffff-ffff-ffff-ffff-ffffffffffff"' AS uuid))
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 135 at EXECUTE
 SELECT id, val, s, e FROM fp_uuid ORDER BY s;
  id | val |                  s                   |                  e                   
 ----+-----+--------------------------------------+--------------------------------------
-  1 | a   | 00000000-0000-0000-0000-000000000000 | ffffffff-ffff-ffff-ffff-ffffffffffff
-(1 row)
+  1 | a   | 00000000-0000-0000-0000-000000000000 | 30000000-0000-0000-0000-000000000000
+  1 | b   | 30000000-0000-0000-0000-000000000000 | 60000000-0000-0000-0000-000000000000
+  1 | a   | 60000000-0000-0000-0000-000000000000 | ffffffff-ffff-ffff-ffff-ffffffffffff
+(3 rows)
 
 SELECT periods.drop_for_portion_view('fp_uuid', 'p');
  drop_for_portion_view 
@@ -1622,11 +1619,8 @@ SELECT id, val, s, e FROM fp_datep ORDER BY s;
 
 /* A NULL portion bound is an error, not a garbage cast */
 UPDATE fp_datep__for_portion_of_p SET val = 'c', s = NULL, e = '2020-06-01';
-ERROR:  invalid input syntax for type date: "null"
-LINE 1: VALUES (CAST('"2020-01-01"' AS date) < CAST('null' AS date) ...
-                                                    ^
-QUERY:  VALUES (CAST('"2020-01-01"' AS date) < CAST('null' AS date) AND         CAST('null' AS date) < CAST('"2020-03-01"' AS date))
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 135 at EXECUTE
+ERROR:  portion bounds cannot be NULL
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 122 at RAISE
 SELECT periods.drop_for_portion_view('fp_datep', 'p');
  drop_for_portion_view 
 -----------------------

@@ -164,6 +164,15 @@ $function$;
  * nothing while the pre/post slices were still inserted, silently losing the
  * edit and leaving overlapping periods.  Match on the primary key columns
  * alone, and refuse to run if they cannot all be matched by name.
+ *
+ * The portion endpoints were also interpolated as raw jsonb, leaking JSON
+ * string quoting into the endpoint-test and row-filter literals.  Datetime
+ * subtypes survived only because their input parsers skip double quotes;
+ * strict parsers (a range over uuid, say) failed outright.  The endpoint
+ * scalars are now unwrapped with #>> '{}', and a NULL bound is rejected with
+ * a real error instead of a nonsense cast failure.  Subtypes whose text form
+ * is not their JSON scalar rendering (containers, jsonb itself) remain
+ * unsupported here, exactly as before.
  */
 CREATE OR REPLACE FUNCTION periods.update_portion_of()
  RETURNS trigger
@@ -285,6 +294,14 @@ BEGIN
     fromval := jnew->info.start_column_name;
     toval := jnew->info.end_column_name;
 
+    /* An unbounded portion is not supported; reject it before the casts below
+     * turn the JSON null into a nonsense literal. */
+    IF fromval IS NULL OR jsonb_typeof(fromval) = 'null'
+        OR toval IS NULL OR jsonb_typeof(toval) = 'null'
+    THEN
+        RAISE EXCEPTION 'portion bounds cannot be NULL';
+    END IF;
+
     jold := row_to_json(OLD);
     bstartval := jold->info.start_column_name;
     bendval := jold->info.end_column_name;
@@ -303,7 +320,7 @@ BEGIN
     END IF;
 
     pre_assigned := false;
-    EXECUTE format(TEST_SQL, info.datatype, bstartval, fromval, bendval) INTO test;
+    EXECUTE format(TEST_SQL, info.datatype, bstartval #>> '{}', fromval #>> '{}', bendval #>> '{}') INTO test;
     IF test THEN
         pre_assigned := true;
         pre_row := jsonb_set(pre_row, ARRAY[info.end_column_name], fromval);
@@ -311,7 +328,7 @@ BEGIN
     END IF;
 
     post_assigned := false;
-    EXECUTE format(TEST_SQL, info.datatype, bstartval, toval, bendval) INTO test;
+    EXECUTE format(TEST_SQL, info.datatype, bstartval #>> '{}', toval #>> '{}', bendval #>> '{}') INTO test;
     IF test THEN
         post_assigned := true;
         new_row := jsonb_set(new_row, ARRAY[info.end_column_name], toval::jsonb);
@@ -433,9 +450,9 @@ BEGIN
                    changed_row,
                    where_clause,
                    info.end_column_name,
-                   fromval,
+                   fromval #>> '{}',
                    info.start_column_name,
-                   toval
+                   toval #>> '{}'
                   );
 
     IF post_assigned THEN
