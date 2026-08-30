@@ -1,4 +1,3 @@
--- Model-output: Claude Fable 5
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION periods" to load this file. \quit
 
@@ -544,7 +543,7 @@ BEGIN
 
     /* If this is a system_time period, get rid of the triggers */
     DELETE FROM periods.system_time_periods AS stp
-    WHERE (stp.table_name, stp.period_name) = (table_name, period_name)
+    WHERE stp.table_name = table_name
     RETURNING stp.* INTO system_time_period_row;
 
     IF FOUND AND NOT is_dropped THEN
