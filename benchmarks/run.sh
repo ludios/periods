@@ -21,13 +21,24 @@
 #                    (default 100; use e.g. 5 for a smoke test)
 set -euo pipefail
 
-: "${A_BIN:?bin/ of side A's PostgreSQL install}"
-: "${B_BIN:?bin/ of side B's PostgreSQL install}"
-: "${A_PORT:?port of side A's cluster}"
-: "${B_PORT:?port of side B's cluster}"
+# No apostrophes in these messages: inside ${...:?word} bash pairs a quote
+# with the next one it sees, even across lines, silently swallowing the
+# checks in between.
+: "${A_BIN:?bin/ of the side A PostgreSQL install}"
+: "${B_BIN:?bin/ of the side B PostgreSQL install}"
+: "${A_PORT:?port of the side A cluster}"
+: "${B_PORT:?port of the side B cluster}"
 : "${PGHOST:?unix socket directory of both clusters}"
 A_LABEL=${A_LABEL:-A}
 B_LABEL=${B_LABEL:-B}
+for label in "$A_LABEL" "$B_LABEL"; do
+    case $label in
+        *,* | *'"'* | *"'"* | *$'\n'*)
+            echo "labels must not contain commas, quotes, or newlines: they go into results.csv unescaped" >&2
+            exit 1
+            ;;
+    esac
+done
 ITERS=${ITERS:-5}
 DB=${DB:-bench}
 TXN_SCALE=${TXN_SCALE:-100}
@@ -113,9 +124,12 @@ run_one() {
 setup_side "$A_BIN" "$A_PORT" "$A_LABEL"
 setup_side "$B_BIN" "$B_PORT" "$B_LABEL"
 
-# Warm both sides before measuring: first calls pay one-time costs (loading
-# the .so, building the C triggers' cached SPI plans, catalog caches) that
-# would otherwise land entirely on whichever side runs first.
+# Warm both sides before measuring.  This can only warm state shared across
+# backends — shared_buffers, the filesystem cache, page pruning; per-backend
+# state (the extension .so, its static SPI plans, catalog caches) dies with
+# each pgbench run's connection, so every measured run pays those once on its
+# first transaction, equally on both sides, amortized over the run's
+# transaction count.
 for side in A B; do
     if [ "$side" = A ]; then
         bin=$A_BIN port=$A_PORT label=$A_LABEL
