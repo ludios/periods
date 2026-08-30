@@ -47,7 +47,8 @@ SELECT period_name FROM periods.periods WHERE table_name = 'dp_sysver'::regclass
 SELECT period_name FROM periods.system_time_periods WHERE table_name = 'dp_sysver'::regclass;
  period_name 
 -------------
-(0 rows)
+ system_time
+(1 row)
 
 SELECT count(*) AS sysver_rows FROM periods.system_versioning WHERE table_name = 'dp_sysver'::regclass;
  sysver_rows 
@@ -58,7 +59,7 @@ SELECT count(*) AS sysver_rows FROM periods.system_versioning WHERE table_name =
 SELECT count(*) AS row_triggers FROM pg_catalog.pg_trigger WHERE tgrelid = 'dp_sysver'::regclass AND NOT tgisinternal;
  row_triggers 
 --------------
-            0
+            3
 (1 row)
 
 SELECT count(*) AS infinity_constraints
@@ -67,7 +68,7 @@ JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (stp.table_name,
 WHERE stp.table_name = 'dp_sysver'::regclass;
  infinity_constraints 
 ----------------------
-                    0
+                    1
 (1 row)
 
 /* History must still be written (the INSERT above was an earlier transaction). */
@@ -75,7 +76,8 @@ UPDATE dp_sysver SET val = 'b' WHERE id = 1;
 SELECT val FROM dp_sysver_history;
  val 
 -----
-(0 rows)
+ a
+(1 row)
 
 SELECT periods.drop_system_versioning('dp_sysver', drop_behavior => 'CASCADE', purge => true);
  drop_system_versioning 
