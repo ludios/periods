@@ -1545,3 +1545,139 @@ SELECT periods.drop_foreign_key('fkb_fk', 'fkb_ok');
 
 DROP TABLE fkb_fk;
 DROP TABLE fkb_uk;
+/*
+ * sol.md F3 (reframed): update_portion_of() interpolated raw jsonb values into
+ * the endpoint-comparison casts, so the JSON string quoting leaked into the
+ * literal.  The datetime types survive by parser leniency, but any subtype
+ * with a strict input function (e.g. uuid) failed outright, and a NULL bound
+ * produced a nonsense cast error.
+ */
+CREATE TYPE bugfix_uuidrange AS RANGE (subtype = uuid);
+CREATE TABLE fp_uuid (id integer, val text, s uuid, e uuid, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_uuid', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_for_portion_view('fp_uuid', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+INSERT INTO fp_uuid VALUES (1, 'a', '00000000-0000-0000-0000-000000000000',
+                                    'ffffffff-ffff-ffff-ffff-ffffffffffff');
+UPDATE fp_uuid__for_portion_of_p SET val = 'b',
+    s = '30000000-0000-0000-0000-000000000000',
+    e = '60000000-0000-0000-0000-000000000000';
+ERROR:  invalid input syntax for type uuid: ""00000000-0000-0000-0000-000000000000""
+LINE 1: VALUES (CAST('"00000000-0000-0000-0000-000000000000"' AS uui...
+                     ^
+QUERY:  VALUES (CAST('"00000000-0000-0000-0000-000000000000"' AS uuid) < CAST('"30000000-0000-0000-0000-000000000000"' AS uuid) AND         CAST('"30000000-0000-0000-0000-000000000000"' AS uuid) < CAST('"ffffffff-ffff-ffff-ffff-ffffffffffff"' AS uuid))
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 135 at EXECUTE
+SELECT id, val, s, e FROM fp_uuid ORDER BY s;
+ id | val |                  s                   |                  e                   
+----+-----+--------------------------------------+--------------------------------------
+  1 | a   | 00000000-0000-0000-0000-000000000000 | ffffffff-ffff-ffff-ffff-ffffffffffff
+(1 row)
+
+SELECT periods.drop_for_portion_view('fp_uuid', 'p');
+ drop_for_portion_view 
+-----------------------
+ t
+(1 row)
+
+SELECT periods.drop_period('fp_uuid', 'p');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_uuid;
+DROP TYPE bugfix_uuidrange;
+/* The common date case worked before through parser leniency and must keep working */
+CREATE TABLE fp_datep (id integer, val text, s date, e date, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_datep', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_for_portion_view('fp_datep', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+INSERT INTO fp_datep VALUES (1, 'a', '2020-01-01', '2021-01-01');
+UPDATE fp_datep__for_portion_of_p SET val = 'b', s = '2020-03-01', e = '2020-06-01';
+SELECT id, val, s, e FROM fp_datep ORDER BY s;
+ id | val |     s      |     e      
+----+-----+------------+------------
+  1 | a   | 01-01-2020 | 03-01-2020
+  1 | b   | 03-01-2020 | 06-01-2020
+  1 | a   | 06-01-2020 | 01-01-2021
+(3 rows)
+
+/* A NULL portion bound is an error, not a garbage cast */
+UPDATE fp_datep__for_portion_of_p SET val = 'c', s = NULL, e = '2020-06-01';
+ERROR:  invalid input syntax for type date: "null"
+LINE 1: VALUES (CAST('"2020-01-01"' AS date) < CAST('null' AS date) ...
+                                                    ^
+QUERY:  VALUES (CAST('"2020-01-01"' AS date) < CAST('null' AS date) AND         CAST('null' AS date) < CAST('"2020-03-01"' AS date))
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 135 at EXECUTE
+SELECT periods.drop_for_portion_view('fp_datep', 'p');
+ drop_for_portion_view 
+-----------------------
+ t
+(1 row)
+
+SELECT periods.drop_period('fp_datep', 'p');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_datep;
+/* Container subtypes (JSON form is not the type's input form) are not
+ * supported by FOR PORTION OF; the failure must stay the same, not worsen. */
+CREATE TYPE bugfix_intarrrange AS RANGE (subtype = integer[]);
+CREATE TABLE fp_arrp (id integer, val text, s integer[], e integer[], PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_arrp', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_for_portion_view('fp_arrp', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+INSERT INTO fp_arrp VALUES (1, 'a', '{1}', '{9}');
+\set VERBOSITY terse
+UPDATE fp_arrp__for_portion_of_p SET val = 'b', s = '{3}', e = '{6}';
+ERROR:  malformed array literal: "[1]" at character 14
+\set VERBOSITY default
+SELECT id, val, s, e FROM fp_arrp ORDER BY s;
+ id | val |  s  |  e  
+----+-----+-----+-----
+  1 | a   | {1} | {9}
+(1 row)
+
+SELECT periods.drop_for_portion_view('fp_arrp', 'p');
+ drop_for_portion_view 
+-----------------------
+ t
+(1 row)
+
+SELECT periods.drop_period('fp_arrp', 'p');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_arrp;
+DROP TYPE bugfix_intarrrange;

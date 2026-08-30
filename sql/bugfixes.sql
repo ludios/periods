@@ -709,3 +709,57 @@ SELECT periods.drop_foreign_key('fkb_fk', 'fkb_ok');
 
 DROP TABLE fkb_fk;
 DROP TABLE fkb_uk;
+
+/*
+ * sol.md F3 (reframed): update_portion_of() interpolated raw jsonb values into
+ * the endpoint-comparison casts, so the JSON string quoting leaked into the
+ * literal.  The datetime types survive by parser leniency, but any subtype
+ * with a strict input function (e.g. uuid) failed outright, and a NULL bound
+ * produced a nonsense cast error.
+ */
+
+CREATE TYPE bugfix_uuidrange AS RANGE (subtype = uuid);
+CREATE TABLE fp_uuid (id integer, val text, s uuid, e uuid, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_uuid', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_uuid', 'p');
+INSERT INTO fp_uuid VALUES (1, 'a', '00000000-0000-0000-0000-000000000000',
+                                    'ffffffff-ffff-ffff-ffff-ffffffffffff');
+UPDATE fp_uuid__for_portion_of_p SET val = 'b',
+    s = '30000000-0000-0000-0000-000000000000',
+    e = '60000000-0000-0000-0000-000000000000';
+SELECT id, val, s, e FROM fp_uuid ORDER BY s;
+SELECT periods.drop_for_portion_view('fp_uuid', 'p');
+SELECT periods.drop_period('fp_uuid', 'p');
+DROP TABLE fp_uuid;
+DROP TYPE bugfix_uuidrange;
+
+/* The common date case worked before through parser leniency and must keep working */
+CREATE TABLE fp_datep (id integer, val text, s date, e date, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_datep', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_datep', 'p');
+INSERT INTO fp_datep VALUES (1, 'a', '2020-01-01', '2021-01-01');
+UPDATE fp_datep__for_portion_of_p SET val = 'b', s = '2020-03-01', e = '2020-06-01';
+SELECT id, val, s, e FROM fp_datep ORDER BY s;
+
+/* A NULL portion bound is an error, not a garbage cast */
+UPDATE fp_datep__for_portion_of_p SET val = 'c', s = NULL, e = '2020-06-01';
+
+SELECT periods.drop_for_portion_view('fp_datep', 'p');
+SELECT periods.drop_period('fp_datep', 'p');
+DROP TABLE fp_datep;
+
+/* Container subtypes (JSON form is not the type's input form) are not
+ * supported by FOR PORTION OF; the failure must stay the same, not worsen. */
+CREATE TYPE bugfix_intarrrange AS RANGE (subtype = integer[]);
+CREATE TABLE fp_arrp (id integer, val text, s integer[], e integer[], PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_arrp', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_arrp', 'p');
+INSERT INTO fp_arrp VALUES (1, 'a', '{1}', '{9}');
+\set VERBOSITY terse
+UPDATE fp_arrp__for_portion_of_p SET val = 'b', s = '{3}', e = '{6}';
+\set VERBOSITY default
+SELECT id, val, s, e FROM fp_arrp ORDER BY s;
+SELECT periods.drop_for_portion_view('fp_arrp', 'p');
+SELECT periods.drop_period('fp_arrp', 'p');
+DROP TABLE fp_arrp;
+DROP TYPE bugfix_intarrrange;
