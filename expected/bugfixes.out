@@ -1389,12 +1389,12 @@ SELECT periods.add_system_time_period('d6');
 CREATE VIEW d6_history AS SELECT * FROM d6;
 SELECT periods.add_system_versioning('d6');
 ERROR:  history relation "public.d6_history" must be a regular table
-CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 101 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 108 at RAISE
 DROP VIEW d6_history;
 CREATE MATERIALIZED VIEW d6_history AS SELECT * FROM d6;
 SELECT periods.add_system_versioning('d6');
 ERROR:  history relation "public.d6_history" must be a regular table
-CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 101 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 108 at RAISE
 DROP MATERIALIZED VIEW d6_history;
 /* Adopting a legitimate pre-existing plain table must keep working */
 CREATE TABLE d6_history (LIKE d6);
@@ -1910,73 +1910,72 @@ SET SESSION AUTHORIZATION b33_attacker;
 SELECT count(*) FROM b33.vt;
 ERROR:  permission denied for table vt
 SELECT periods.add_period('b33.vt', 'q', 's', 'e');
- add_period 
-------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.add_period(regclass,name,name,name,regtype,name) line 28 at PERFORM
 SELECT periods.add_system_time_period('b33.vt');
- add_system_time_period 
-------------------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_class)"
+PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 34 at PERFORM
 SELECT periods.set_system_time_period_excluded_columns('b33.vt', ARRAY['val']);
- set_system_time_period_excluded_columns 
------------------------------------------
- 
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.set_system_time_period_excluded_columns(regclass,name[]) line 9 at PERFORM
 SELECT periods.add_system_versioning('b33.vt');
-NOTICE:  history table "b33.vt_history" created for "b33.vt", be sure to index it properly
- add_system_versioning 
------------------------
- 
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_class)"
+PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 20 at PERFORM
 SELECT periods.add_for_portion_view('b33.vt', 'p');
- add_for_portion_view 
-----------------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.add_for_portion_view(regclass,name) line 27 at PERFORM
 SELECT periods.add_unique_key('b33.vt', ARRAY['id'], 'p', 'b33_stolen_k');
- add_unique_key 
-----------------
- b33_stolen_k
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.add_unique_key(regclass,name[],name,name,name,name) line 22 at PERFORM
 SELECT periods.drop_unique_key('b33.vt', 'b33_stolen_k');
- drop_unique_key 
------------------
- 
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.drop_unique_key(regclass,name,periods.drop_behavior,boolean) line 12 at PERFORM
 SELECT periods.drop_for_portion_view('b33.vt', 'p');
- drop_for_portion_view 
------------------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.drop_for_portion_view(regclass,name,periods.drop_behavior,boolean) line 21 at PERFORM
 SELECT periods.drop_system_versioning('b33.vt', drop_behavior => 'CASCADE', purge => true);
- drop_system_versioning 
-------------------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.drop_system_versioning(regclass,periods.drop_behavior,boolean) line 12 at PERFORM
 SELECT periods.drop_system_time_period('b33.vt');
-NOTICE:  period system_time not found on table b33.vt
- drop_system_time_period 
--------------------------
- f
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 19 at PERFORM
+SQL function "drop_system_time_period" statement 1
 SELECT periods.drop_period('b33.vt', 'q');
- drop_period 
--------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 19 at PERFORM
 /* A foreign key puts triggers on the *referenced* table, which is the victim's. */
 CREATE TABLE b33a.at (id integer, s date NOT NULL, e date NOT NULL);
 SELECT periods.add_period('b33a.at', 'p', 's', 'e');
@@ -1986,11 +1985,8 @@ SELECT periods.add_period('b33a.at', 'p', 's', 'e');
 (1 row)
 
 SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk');
- add_foreign_key 
------------------
- b33_fk
-(1 row)
-
+ERROR:  permission denied for table b33.vt
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 179 at RAISE
 /* add_system_versioning() adopts a matching history table and reassigns its owner. */
 CREATE TABLE b33a.base (id integer PRIMARY KEY, val text);
 SELECT periods.add_system_time_period('b33a.base');
@@ -2000,27 +1996,26 @@ SELECT periods.add_system_time_period('b33a.base');
 (1 row)
 
 SELECT periods.add_system_versioning('b33a.base', 'spoils');
- add_system_versioning 
------------------------
- 
-(1 row)
-
+ERROR:  must be owner of table b33a.spoils
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL statement "SELECT periods._require_table_owner(history_table_id::regclass)"
+PL/pgSQL function periods.add_system_versioning(regclass,name,name,name,name,name,name) line 105 at PERFORM
 SELECT relowner::regrole AS spoils_owner
 FROM pg_catalog.pg_class WHERE oid = 'b33a.spoils'::regclass;
  spoils_owner 
 --------------
- b33_attacker
+ b33_victim
 (1 row)
 
 /* SET ROLE has to count: session_user here is still the superuser running the tests. */
 RESET SESSION AUTHORIZATION;
 SET ROLE b33_attacker;
 SELECT periods.add_period('b33.vt', 'r', 's', 'e');
- add_period 
-------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33.vt
+CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
+SQL function "_serialize" statement 2
+SQL statement "SELECT periods._serialize(table_name)"
+PL/pgSQL function periods.add_period(regclass,name,name,name,regtype,name) line 28 at PERFORM
 RESET ROLE;
 /*
  * What must keep working: with REFERENCES granted the attacker may legitimately
@@ -2041,11 +2036,8 @@ SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name
  */
 SET SESSION AUTHORIZATION b33_bystander;
 SELECT periods.drop_foreign_key(NULL, 'b33_fk2');
- drop_foreign_key 
-------------------
- t
-(1 row)
-
+ERROR:  must be owner of table b33a.at
+CONTEXT:  PL/pgSQL function periods.drop_foreign_key(regclass,name) line 42 at RAISE
 /* The owner of the referencing table may. */
 SET SESSION AUTHORIZATION b33_attacker;
 SELECT periods.drop_foreign_key(NULL, 'b33_fk2');
@@ -2076,9 +2068,10 @@ SELECT count(*) AS foreign_keys_left FROM periods.foreign_keys WHERE key_name LI
 
 RESET SESSION AUTHORIZATION;
 SELECT periods.drop_system_versioning('b33a.base', drop_behavior => 'CASCADE', purge => true);
+NOTICE:  table b33a.base does not have SYSTEM VERSIONING
  drop_system_versioning 
 ------------------------
- t
+ f
 (1 row)
 
 SELECT periods.drop_system_versioning('b33.vt', drop_behavior => 'CASCADE', purge => true);
@@ -2091,8 +2084,9 @@ NOTICE:  table b33.vt does not have SYSTEM VERSIONING
 DROP SCHEMA b33 CASCADE;
 NOTICE:  drop cascades to table b33.vt
 DROP SCHEMA b33a CASCADE;
-NOTICE:  drop cascades to 2 other objects
-DETAIL:  drop cascades to table b33a.at
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to table b33a.spoils
+drop cascades to table b33a.at
 drop cascades to table b33a.base
 DROP ROLE b33_victim;
 DROP ROLE b33_attacker;

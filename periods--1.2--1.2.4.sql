@@ -1646,6 +1646,13 @@ BEGIN
     WHERE (n.nspname, c.relname) = (schema_name, history_table_name);
 
     IF FOUND THEN
+        /*
+         * We are about to reassign this table to the base table's owner, so the
+         * caller has to own it already.  Otherwise owning any table lets you
+         * take over any other table whose columns happen to line up.
+         */
+        PERFORM periods._require_table_owner(history_table_id::regclass);
+
         IF history_kind <> 'r' THEN
             RAISE EXCEPTION 'history relation "%" must be a regular table', history_table_id::regclass;
         END IF;
@@ -2579,229 +2586,6 @@ END;
 $function$;
 
 /*
- * add_foreign_key() validated its parameters too late or not at all: the
- * unimplemented MATCH PARTIAL was accepted and detonated only when a
- * partially-NULL key reached the deferred triggers; unsupported referential
- * actions and NULL parameters survived until the catalog INSERT's
- * constraints; and nothing compared the referencing and referenced column
- * counts, so mismatches (or empty/multidimensional arrays) died deep inside
- * name generation or the existing-data validator.  All of those are now
- * rejected up front.  A duplicated SYSTEM_TIME-column check that raised
- * '... not allowed in UNIQUE keys' (a copy-paste from add_unique_key) is
- * removed in favor of the correctly-worded check a few lines below it,
- * which it had been shadowing.  Otherwise identical to the 1.2 original.
- */
-CREATE OR REPLACE FUNCTION periods.add_foreign_key(
-        table_name regclass,
-        column_names name[],
-        period_name name,
-        ref_unique_name name,
-        match_type periods.fk_match_types DEFAULT 'SIMPLE',
-        update_action periods.fk_actions DEFAULT 'NO ACTION',
-        delete_action periods.fk_actions DEFAULT 'NO ACTION',
-        key_name name DEFAULT NULL,
-        fk_insert_trigger name DEFAULT NULL,
-        fk_update_trigger name DEFAULT NULL,
-        uk_update_trigger name DEFAULT NULL,
-        uk_delete_trigger name DEFAULT NULL)
- RETURNS name
- LANGUAGE plpgsql
- SECURITY DEFINER
-AS
-$function$
-#variable_conflict use_variable
-DECLARE
-    period_row periods.periods;
-    ref_period_row periods.periods;
-    unique_row periods.unique_keys;
-    column_attnums smallint[];
-    idx integer;
-    pass integer;
-    upd_action text DEFAULT '';
-    del_action text DEFAULT '';
-    foreign_columns text;
-    unique_columns text;
-BEGIN
-    IF table_name IS NULL THEN
-        RAISE EXCEPTION 'no table name specified';
-    END IF;
-
-    IF column_names IS NULL OR cardinality(column_names) = 0 THEN
-        RAISE EXCEPTION 'no referencing columns specified';
-    END IF;
-
-    /* Reject the match types and referential actions we do not implement */
-    IF match_type IS NULL THEN
-        RAISE EXCEPTION 'no match type specified';
-    END IF;
-    IF match_type = 'PARTIAL' THEN
-        RAISE EXCEPTION 'MATCH PARTIAL is not implemented';
-    END IF;
-    IF update_action IS NULL OR delete_action IS NULL THEN
-        RAISE EXCEPTION 'no referential action specified';
-    END IF;
-    IF update_action NOT IN ('NO ACTION', 'RESTRICT') THEN
-        RAISE EXCEPTION 'update_action % is not implemented', update_action;
-    END IF;
-    IF delete_action NOT IN ('NO ACTION', 'RESTRICT') THEN
-        RAISE EXCEPTION 'delete_action % is not implemented', delete_action;
-    END IF;
-
-    /* Always serialize operations on our catalogs */
-    PERFORM periods._serialize(table_name);
-
-    /* Get the period involved */
-    SELECT p.*
-    INTO period_row
-    FROM periods.periods AS p
-    WHERE (p.table_name, p.period_name) = (table_name, period_name);
-
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'period "%" does not exist', period_name;
-    END IF;
-
-    /* SYSTEM_TIME is not allowed in referential constraints. SQL:2016 11.8 SR 10 */
-    IF period_row.period_name = 'system_time' THEN
-        RAISE EXCEPTION 'periods for SYSTEM_TIME are not allowed in foreign keys';
-    END IF;
-
-    /* Get column attnums from column names */
-    SELECT array_agg(a.attnum ORDER BY n.ordinality)
-    INTO column_attnums
-    FROM unnest(column_names) WITH ORDINALITY AS n (name, ordinality)
-    LEFT JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attname) = (table_name, n.name);
-
-    /* System columns are not allowed */
-    IF 0 > ANY (column_attnums) THEN
-        RAISE EXCEPTION 'index creation on system columns is not supported';
-    END IF;
-
-    /* Report if any columns weren't found */
-    idx := array_position(column_attnums, NULL);
-    IF idx IS NOT NULL THEN
-        RAISE EXCEPTION 'column "%" does not exist', column_names[idx];
-    END IF;
-
-    /* Make sure the period columns aren't also in the normal columns */
-    IF period_row.start_column_name = ANY (column_names) THEN
-        RAISE EXCEPTION 'column "%" specified twice', period_row.start_column_name;
-    END IF;
-    IF period_row.end_column_name = ANY (column_names) THEN
-        RAISE EXCEPTION 'column "%" specified twice', period_row.end_column_name;
-    END IF;
-
-    /* Columns can't be part of any SYSTEM_TIME period. SQL:2016 11.8 SR 10 */
-    IF EXISTS (
-        SELECT FROM periods.periods AS p
-        WHERE (p.table_name, p.period_name) = (table_name, 'system_time')
-          AND ARRAY[p.start_column_name, p.end_column_name] && column_names)
-    THEN
-        RAISE EXCEPTION 'columns for SYSTEM_TIME must not be part of foreign keys';
-    END IF;
-
-    /* Get the unique key we're linking to */
-    SELECT uk.*
-    INTO unique_row
-    FROM periods.unique_keys AS uk
-    WHERE uk.key_name = ref_unique_name;
-
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'unique key "%" does not exist', ref_unique_name;
-    END IF;
-
-    /* Get the unique key's period */
-    SELECT p.*
-    INTO ref_period_row
-    FROM periods.periods AS p
-    WHERE (p.table_name, p.period_name) = (unique_row.table_name, unique_row.period_name);
-
-    IF period_row.range_type <> ref_period_row.range_type THEN
-        RAISE EXCEPTION 'period types "%" and "%" are incompatible',
-            period_row.period_name, ref_period_row.period_name;
-    END IF;
-
-    IF cardinality(column_names) <> cardinality(unique_row.column_names) THEN
-        RAISE EXCEPTION 'number of referencing and referenced columns for foreign key disagree';
-    END IF;
-
-    /* Check that all the columns match */
-    IF EXISTS (
-        SELECT FROM unnest(column_names, unique_row.column_names) AS u (fk_attname, uk_attname)
-        JOIN pg_catalog.pg_attribute AS fa ON (fa.attrelid, fa.attname) = (table_name, u.fk_attname)
-        JOIN pg_catalog.pg_attribute AS ua ON (ua.attrelid, ua.attname) = (unique_row.table_name, u.uk_attname)
-        WHERE (fa.atttypid, fa.atttypmod, fa.attcollation) <> (ua.atttypid, ua.atttypmod, ua.attcollation))
-    THEN
-        RAISE EXCEPTION 'column types do not match';
-    END IF;
-
-    /* The range types must match, too */
-    IF period_row.range_type <> ref_period_row.range_type THEN
-        RAISE EXCEPTION 'period types do not match';
-    END IF;
-
-    /*
-     * Generate a name for the foreign constraint.  We don't have to worry about
-     * concurrency here because all period ddl commands lock the periods table.
-     */
-    IF key_name IS NULL THEN
-        key_name := periods._choose_name(
-            ARRAY[(SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.oid = table_name)]
-               || column_names
-               || ARRAY[period_name]);
-    END IF;
-    pass := 0;
-    WHILE EXISTS (
-       SELECT FROM periods.foreign_keys AS fk
-       WHERE fk.key_name = key_name || CASE WHEN pass > 0 THEN '_' || pass::text ELSE '' END)
-    LOOP
-       pass := pass + 1;
-    END LOOP;
-    key_name := key_name || CASE WHEN pass > 0 THEN '_' || pass::text ELSE '' END;
-
-    /* See if we're deferring the constraints or not */
-    IF update_action = 'NO ACTION' THEN
-        upd_action := ' DEFERRABLE INITIALLY DEFERRED';
-    END IF;
-    IF delete_action = 'NO ACTION' THEN
-        del_action := ' DEFERRABLE INITIALLY DEFERRED';
-    END IF;
-
-    /* Get the columns that require checking the constraint */
-    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
-    INTO foreign_columns
-    FROM unnest(column_names || period_row.start_column_name || period_row.end_column_name) WITH ORDINALITY AS u (column_name, ordinality);
-
-    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
-    INTO unique_columns
-    FROM unnest(unique_row.column_names || ref_period_row.start_column_name || ref_period_row.end_column_name) WITH ORDINALITY AS u (column_name, ordinality);
-
-    /* Time to make the underlying triggers */
-    fk_insert_trigger := coalesce(fk_insert_trigger, periods._choose_name(ARRAY[key_name], 'fk_insert'));
-    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER INSERT ON %s FROM %s DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE PROCEDURE periods.fk_insert_check(%L)',
-        fk_insert_trigger, table_name, unique_row.table_name, key_name);
-    fk_update_trigger := coalesce(fk_update_trigger, periods._choose_name(ARRAY[key_name], 'fk_update'));
-    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE PROCEDURE periods.fk_update_check(%L)',
-        fk_update_trigger, foreign_columns, table_name, unique_row.table_name, key_name);
-    uk_update_trigger := coalesce(uk_update_trigger, periods._choose_name(ARRAY[key_name], 'uk_update'));
-    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s%s FOR EACH ROW EXECUTE PROCEDURE periods.uk_update_check(%L)',
-        uk_update_trigger, unique_columns, unique_row.table_name, table_name, upd_action, key_name);
-    uk_delete_trigger := coalesce(uk_delete_trigger, periods._choose_name(ARRAY[key_name], 'uk_delete'));
-    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER DELETE ON %s FROM %s%s FOR EACH ROW EXECUTE PROCEDURE periods.uk_delete_check(%L)',
-        uk_delete_trigger, unique_row.table_name, table_name, del_action, key_name);
-
-    INSERT INTO periods.foreign_keys (key_name, table_name, column_names, period_name, unique_key, match_type, update_action, delete_action,
-                                      fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)
-    VALUES (key_name, table_name, column_names, period_name, unique_row.key_name, match_type, update_action, delete_action,
-            fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger);
-
-    /* Validate the constraint on existing data */
-    PERFORM periods.validate_foreign_key_new_row(key_name, NULL);
-
-    RETURN key_name;
-END;
-$function$;
-
-/*
  * periods.periods.range_type is a regtype, and a regtype renders itself as a
  * ready-made identifier: quoted when the name needs it, schema-qualified when
  * the type is not visible on the search_path.  Passing it through %I quoted the
@@ -3364,3 +3148,403 @@ ALTER FUNCTION periods.set_system_time_period_excluded_columns(regclass,name[])
     SET search_path TO pg_catalog, pg_temp;
 ALTER FUNCTION periods.write_history()
     SET search_path TO pg_catalog, pg_temp;
+
+/*
+ * The DDL entry points below are SECURITY DEFINER and executable by PUBLIC, and
+ * none of them used to ask whether the caller was allowed to reshape the table
+ * they were pointed at.  Any role could therefore add periods (and with them
+ * CHECK constraints and SET NOT NULL), add SYSTEM_TIME — which adds two columns
+ * — turn on SYSTEM VERSIONING, and tear any of it down again, on a table it had
+ * no privilege on at all.
+ *
+ * Authorizing that needs the role the *session* is acting as.  current_user is
+ * the definer by the time our code runs, and session_user cannot see a SET ROLE.
+ * PostgreSQL only moves CurrentUserId when it enters a SECURITY DEFINER
+ * function, so OuterUserId still holds what current_user was on the outside.
+ */
+CREATE FUNCTION periods._outer_user()
+ RETURNS oid
+ LANGUAGE c
+ STABLE
+AS 'MODULE_PATHNAME', 'outer_user';
+
+/*
+ * Raise unless the session may act as the owner of table_name, which is the
+ * same test PostgreSQL applies to ALTER TABLE (membership counts, but only
+ * through roles whose privileges the session has without a further SET ROLE).
+ *
+ * A NULL table, or one that has since been dropped, matches nothing and is
+ * allowed through: there is no longer any relation to protect, and the callers
+ * that can reach this with a stale regclass are only removing our own catalog
+ * rows for it.
+ */
+CREATE FUNCTION periods._require_table_owner(table_name regclass)
+ RETURNS void
+ LANGUAGE plpgsql
+ STABLE
+ SET search_path TO pg_catalog, pg_temp
+AS
+$function$
+#variable_conflict use_variable
+BEGIN
+    IF NOT EXISTS (
+        SELECT
+        FROM pg_catalog.pg_class AS c
+        WHERE c.oid = table_name
+          AND NOT pg_catalog.pg_has_role(periods._outer_user(), c.relowner, 'USAGE'))
+    THEN
+        RETURN;
+    END IF;
+
+    RAISE EXCEPTION 'must be owner of table %', table_name
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$function$;
+
+/*
+ * Begin a periods DDL operation on table_name: serialize against concurrent
+ * periods DDL on the same table, and then, under that lock, check that the
+ * session is allowed to reshape it.
+ *
+ * Every mutating entry point already called this as its first statement after
+ * validating its arguments, which is what makes the check unskippable — they
+ * all need the lock — without copying ten function bodies into this script.
+ */
+CREATE OR REPLACE FUNCTION periods._serialize(table_name regclass)
+ RETURNS void
+ LANGUAGE sql
+ SET search_path TO pg_catalog, pg_temp
+AS
+$function$
+/* XXX: Is this the best way to do locking? */
+SELECT pg_catalog.pg_advisory_xact_lock('periods.periods'::regclass::oid::integer, table_name::oid::integer);
+SELECT periods._require_table_owner(table_name);
+$function$;
+
+/*
+ * add_foreign_key() puts the uk_update/uk_delete triggers on the table the key
+ * refers to, and drop_foreign_key() takes them off again — neither table is
+ * necessarily the one _serialize() was given, so both need their own check.
+ *
+ * The parameters are also validated up front: the unimplemented MATCH
+ * PARTIAL and CASCADE/SET NULL/SET DEFAULT actions, NULL match/action
+ * parameters, an empty referencing-column list, and referencing/referenced
+ * column-count mismatches are rejected before any trigger exists, and the
+ * duplicated SYSTEM_TIME-column check that shadowed the correctly-worded one
+ * is gone.
+ */
+CREATE OR REPLACE FUNCTION periods.add_foreign_key(
+        table_name regclass,
+        column_names name[],
+        period_name name,
+        ref_unique_name name,
+        match_type periods.fk_match_types DEFAULT 'SIMPLE',
+        update_action periods.fk_actions DEFAULT 'NO ACTION',
+        delete_action periods.fk_actions DEFAULT 'NO ACTION',
+        key_name name DEFAULT NULL,
+        fk_insert_trigger name DEFAULT NULL,
+        fk_update_trigger name DEFAULT NULL,
+        uk_update_trigger name DEFAULT NULL,
+        uk_delete_trigger name DEFAULT NULL)
+ RETURNS name
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    period_row periods.periods;
+    ref_period_row periods.periods;
+    unique_row periods.unique_keys;
+    column_attnums smallint[];
+    idx integer;
+    pass integer;
+    upd_action text DEFAULT '';
+    del_action text DEFAULT '';
+    foreign_columns text;
+    unique_columns text;
+BEGIN
+    IF table_name IS NULL THEN
+        RAISE EXCEPTION 'no table name specified';
+    END IF;
+
+    IF column_names IS NULL OR cardinality(column_names) = 0 THEN
+        RAISE EXCEPTION 'no referencing columns specified';
+    END IF;
+
+    /* Reject the match types and referential actions we do not implement */
+    IF match_type IS NULL THEN
+        RAISE EXCEPTION 'no match type specified';
+    END IF;
+    IF match_type = 'PARTIAL' THEN
+        RAISE EXCEPTION 'MATCH PARTIAL is not implemented';
+    END IF;
+    IF update_action IS NULL OR delete_action IS NULL THEN
+        RAISE EXCEPTION 'no referential action specified';
+    END IF;
+    IF update_action NOT IN ('NO ACTION', 'RESTRICT') THEN
+        RAISE EXCEPTION 'update_action % is not implemented', update_action;
+    END IF;
+    IF delete_action NOT IN ('NO ACTION', 'RESTRICT') THEN
+        RAISE EXCEPTION 'delete_action % is not implemented', delete_action;
+    END IF;
+
+    /* Always serialize operations on our catalogs */
+    PERFORM periods._serialize(table_name);
+
+    /* Get the period involved */
+    SELECT p.*
+    INTO period_row
+    FROM periods.periods AS p
+    WHERE (p.table_name, p.period_name) = (table_name, period_name);
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'period "%" does not exist', period_name;
+    END IF;
+
+    /* SYSTEM_TIME is not allowed in referential constraints. SQL:2016 11.8 SR 10 */
+    IF period_row.period_name = 'system_time' THEN
+        RAISE EXCEPTION 'periods for SYSTEM_TIME are not allowed in foreign keys';
+    END IF;
+
+    /* Get column attnums from column names */
+    SELECT array_agg(a.attnum ORDER BY n.ordinality)
+    INTO column_attnums
+    FROM unnest(column_names) WITH ORDINALITY AS n (name, ordinality)
+    LEFT JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attname) = (table_name, n.name);
+
+    /* System columns are not allowed */
+    IF 0 > ANY (column_attnums) THEN
+        RAISE EXCEPTION 'index creation on system columns is not supported';
+    END IF;
+
+    /* Report if any columns weren't found */
+    idx := array_position(column_attnums, NULL);
+    IF idx IS NOT NULL THEN
+        RAISE EXCEPTION 'column "%" does not exist', column_names[idx];
+    END IF;
+
+    /* Make sure the period columns aren't also in the normal columns */
+    IF period_row.start_column_name = ANY (column_names) THEN
+        RAISE EXCEPTION 'column "%" specified twice', period_row.start_column_name;
+    END IF;
+    IF period_row.end_column_name = ANY (column_names) THEN
+        RAISE EXCEPTION 'column "%" specified twice', period_row.end_column_name;
+    END IF;
+
+    /* Columns can't be part of any SYSTEM_TIME period. SQL:2016 11.8 SR 10 */
+    IF EXISTS (
+        SELECT FROM periods.periods AS p
+        WHERE (p.table_name, p.period_name) = (table_name, 'system_time')
+          AND ARRAY[p.start_column_name, p.end_column_name] && column_names)
+    THEN
+        RAISE EXCEPTION 'columns for SYSTEM_TIME must not be part of foreign keys';
+    END IF;
+
+    /* Get the unique key we're linking to */
+    SELECT uk.*
+    INTO unique_row
+    FROM periods.unique_keys AS uk
+    WHERE uk.key_name = ref_unique_name;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'unique key "%" does not exist', ref_unique_name;
+    END IF;
+
+    /* Get the unique key's period */
+    SELECT p.*
+    INTO ref_period_row
+    FROM periods.periods AS p
+    WHERE (p.table_name, p.period_name) = (unique_row.table_name, unique_row.period_name);
+
+    IF period_row.range_type <> ref_period_row.range_type THEN
+        RAISE EXCEPTION 'period types "%" and "%" are incompatible',
+            period_row.period_name, ref_period_row.period_name;
+    END IF;
+
+    IF cardinality(column_names) <> cardinality(unique_row.column_names) THEN
+        RAISE EXCEPTION 'number of referencing and referenced columns for foreign key disagree';
+    END IF;
+
+    /* Check that all the columns match */
+    IF EXISTS (
+        SELECT FROM unnest(column_names, unique_row.column_names) AS u (fk_attname, uk_attname)
+        JOIN pg_catalog.pg_attribute AS fa ON (fa.attrelid, fa.attname) = (table_name, u.fk_attname)
+        JOIN pg_catalog.pg_attribute AS ua ON (ua.attrelid, ua.attname) = (unique_row.table_name, u.uk_attname)
+        WHERE (fa.atttypid, fa.atttypmod, fa.attcollation) <> (ua.atttypid, ua.atttypmod, ua.attcollation))
+    THEN
+        RAISE EXCEPTION 'column types do not match';
+    END IF;
+
+    /* The range types must match, too */
+    IF period_row.range_type <> ref_period_row.range_type THEN
+        RAISE EXCEPTION 'period types do not match';
+    END IF;
+
+    /*
+     * Generate a name for the foreign constraint.  We don't have to worry about
+     * concurrency here because all period ddl commands lock the periods table.
+     */
+    IF key_name IS NULL THEN
+        key_name := periods._choose_name(
+            ARRAY[(SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.oid = table_name)]
+               || column_names
+               || ARRAY[period_name]);
+    END IF;
+    pass := 0;
+    WHILE EXISTS (
+       SELECT FROM periods.foreign_keys AS fk
+       WHERE fk.key_name = key_name || CASE WHEN pass > 0 THEN '_' || pass::text ELSE '' END)
+    LOOP
+       pass := pass + 1;
+    END LOOP;
+    key_name := key_name || CASE WHEN pass > 0 THEN '_' || pass::text ELSE '' END;
+
+    /* See if we're deferring the constraints or not */
+    IF update_action = 'NO ACTION' THEN
+        upd_action := ' DEFERRABLE INITIALLY DEFERRED';
+    END IF;
+    IF delete_action = 'NO ACTION' THEN
+        del_action := ' DEFERRABLE INITIALLY DEFERRED';
+    END IF;
+
+    /* Get the columns that require checking the constraint */
+    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
+    INTO foreign_columns
+    FROM unnest(column_names || period_row.start_column_name || period_row.end_column_name) WITH ORDINALITY AS u (column_name, ordinality);
+
+    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
+    INTO unique_columns
+    FROM unnest(unique_row.column_names || ref_period_row.start_column_name || ref_period_row.end_column_name) WITH ORDINALITY AS u (column_name, ordinality);
+
+    /*
+     * The uk_update/uk_delete triggers below go on the *referenced* table,
+     * which need not belong to us, so hold the caller to what PostgreSQL asks
+     * of a plain FOREIGN KEY: REFERENCES on every referenced key column.
+     * has_column_privilege() is satisfied by a table-wide grant too.
+     */
+    IF EXISTS (
+        SELECT
+        FROM unnest(unique_row.column_names || ref_period_row.start_column_name || ref_period_row.end_column_name) AS u (column_name)
+        WHERE NOT pg_catalog.has_column_privilege(periods._outer_user(), unique_row.table_name, u.column_name, 'REFERENCES'))
+    THEN
+        RAISE EXCEPTION 'permission denied for table %', unique_row.table_name
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    /* Time to make the underlying triggers */
+    fk_insert_trigger := coalesce(fk_insert_trigger, periods._choose_name(ARRAY[key_name], 'fk_insert'));
+    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER INSERT ON %s FROM %s DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE PROCEDURE periods.fk_insert_check(%L)',
+        fk_insert_trigger, table_name, unique_row.table_name, key_name);
+    fk_update_trigger := coalesce(fk_update_trigger, periods._choose_name(ARRAY[key_name], 'fk_update'));
+    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE PROCEDURE periods.fk_update_check(%L)',
+        fk_update_trigger, foreign_columns, table_name, unique_row.table_name, key_name);
+    uk_update_trigger := coalesce(uk_update_trigger, periods._choose_name(ARRAY[key_name], 'uk_update'));
+    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s%s FOR EACH ROW EXECUTE PROCEDURE periods.uk_update_check(%L)',
+        uk_update_trigger, unique_columns, unique_row.table_name, table_name, upd_action, key_name);
+    uk_delete_trigger := coalesce(uk_delete_trigger, periods._choose_name(ARRAY[key_name], 'uk_delete'));
+    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER DELETE ON %s FROM %s%s FOR EACH ROW EXECUTE PROCEDURE periods.uk_delete_check(%L)',
+        uk_delete_trigger, unique_row.table_name, table_name, del_action, key_name);
+
+    INSERT INTO periods.foreign_keys (key_name, table_name, column_names, period_name, unique_key, match_type, update_action, delete_action,
+                                      fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)
+    VALUES (key_name, table_name, column_names, period_name, unique_row.key_name, match_type, update_action, delete_action,
+            fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger);
+
+    /* Validate the constraint on existing data */
+    PERFORM periods.validate_foreign_key_new_row(key_name, NULL);
+
+    RETURN key_name;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION periods.drop_foreign_key(table_name regclass, key_name name)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO pg_catalog, pg_temp
+AS
+$function$
+#variable_conflict use_variable
+DECLARE
+    foreign_key_row periods.foreign_keys;
+    unique_table_name regclass;
+BEGIN
+    IF table_name IS NULL AND key_name IS NULL THEN
+        RAISE EXCEPTION 'no table or key name specified';
+    END IF;
+
+    /* Always serialize operations on our catalogs */
+    PERFORM periods._serialize(table_name);
+
+    FOR foreign_key_row IN
+        SELECT fk.*
+        FROM periods.foreign_keys AS fk
+        WHERE (fk.table_name = table_name OR table_name IS NULL)
+          AND (fk.key_name = key_name OR key_name IS NULL)
+    LOOP
+        SELECT uk.table_name
+        INTO unique_table_name
+        FROM periods.unique_keys AS uk
+        WHERE uk.key_name = foreign_key_row.unique_key;
+
+        /*
+         * _serialize() cannot authorize us when no table was named, and this is
+         * also reached from drop_unique_key()'s CASCADE, where the referencing
+         * table belongs to whoever wrote the foreign key rather than to us.
+         * Owning either end is enough, which is how DROP ... CASCADE already
+         * behaves: owning what is depended upon lets you remove the dependents.
+         */
+        IF EXISTS (
+                SELECT
+                FROM pg_catalog.pg_class AS c
+                WHERE c.oid IN (foreign_key_row.table_name, unique_table_name))
+            AND NOT EXISTS (
+                SELECT
+                FROM pg_catalog.pg_class AS c
+                WHERE c.oid IN (foreign_key_row.table_name, unique_table_name)
+                  AND pg_catalog.pg_has_role(periods._outer_user(), c.relowner, 'USAGE'))
+        THEN
+            RAISE EXCEPTION 'must be owner of table %', foreign_key_row.table_name
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+
+        DELETE FROM periods.foreign_keys AS fk
+        WHERE fk.key_name = foreign_key_row.key_name;
+
+        /*
+         * Make sure the table hasn't been dropped and that the triggers exist
+         * before doing these.  We could use the IF EXISTS clause but we don't
+         * in order to avoid the NOTICE.
+         */
+        IF EXISTS (
+                SELECT FROM pg_catalog.pg_class AS c
+                WHERE c.oid = foreign_key_row.table_name)
+            AND EXISTS (
+                SELECT FROM pg_catalog.pg_trigger AS t
+                WHERE t.tgrelid = foreign_key_row.table_name
+                  AND t.tgname IN (foreign_key_row.fk_insert_trigger, foreign_key_row.fk_update_trigger))
+        THEN
+            EXECUTE format('DROP TRIGGER %I ON %s', foreign_key_row.fk_insert_trigger, foreign_key_row.table_name);
+            EXECUTE format('DROP TRIGGER %I ON %s', foreign_key_row.fk_update_trigger, foreign_key_row.table_name);
+        END IF;
+
+        /* Ditto for the UNIQUE side. */
+        IF unique_table_name IS NOT NULL
+            AND EXISTS (
+                SELECT FROM pg_catalog.pg_class AS c
+                WHERE c.oid = unique_table_name)
+            AND EXISTS (
+                SELECT FROM pg_catalog.pg_trigger AS t
+                WHERE t.tgrelid = unique_table_name
+                  AND t.tgname IN (foreign_key_row.uk_update_trigger, foreign_key_row.uk_delete_trigger))
+        THEN
+            EXECUTE format('DROP TRIGGER %I ON %s', foreign_key_row.uk_update_trigger, unique_table_name);
+            EXECUTE format('DROP TRIGGER %I ON %s', foreign_key_row.uk_delete_trigger, unique_table_name);
+        END IF;
+    END LOOP;
+
+    RETURN true;
+END;
+$function$;

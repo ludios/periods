@@ -1,4 +1,5 @@
 // Model-output: Claude Fable 5
+// Model-output: Claude Opus 5
 #include "postgres.h"
 #include "fmgr.h"
 
@@ -18,6 +19,7 @@
 #include "executor/spi.h"
 #include "funcapi.h"
 #include "lib/stringinfo.h"
+#include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
@@ -37,9 +39,11 @@ PG_MODULE_MAGIC;
 
 PGDLLEXPORT Datum generated_always_as_row_start_end(PG_FUNCTION_ARGS);
 PGDLLEXPORT Datum write_history(PG_FUNCTION_ARGS);
+PGDLLEXPORT Datum outer_user(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(generated_always_as_row_start_end);
 PG_FUNCTION_INFO_V1(write_history);
+PG_FUNCTION_INFO_V1(outer_user);
 
 /* Define some SQLSTATEs that might not exist */
 #if (PG_VERSION_NUM < 100000)
@@ -854,4 +858,19 @@ write_history(PG_FUNCTION_ARGS)
 	}
 
 	return PointerGetDatum(NULL);
+}
+
+/*
+ * The role the session is acting as, ignoring any SECURITY DEFINER frames we
+ * are inside of.  This is what our SECURITY DEFINER functions must authorize
+ * against: current_user is by then the definer, and session_user cannot see a
+ * SET ROLE.  PostgreSQL only moves CurrentUserId when it enters a definer
+ * function, so OuterUserId still holds what current_user was outside of it.
+ *
+ * Returns the role's OID.
+ */
+Datum
+outer_user(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_OID(GetOuterUserId());
 }
