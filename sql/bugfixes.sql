@@ -64,3 +64,52 @@ SELECT id, val, note, s, e FROM fp_nullable ORDER BY s, e, id;
 
 SELECT periods.drop_period('fp_nullable', 'p');
 DROP TABLE fp_nullable;
+
+/*
+ * §4.1: insert_into_history()'s plan cache must re-plan exactly when the
+ * history table's qualified name changes: not on every write (which leaks
+ * one kept plan per history-writing statement), and never running a stale
+ * plan after the history table changed both schema and name.
+ */
+
+CREATE TABLE pc_leak (id integer PRIMARY KEY, val integer);
+SELECT periods.add_system_time_period('pc_leak');
+SELECT periods.add_system_versioning('pc_leak');
+INSERT INTO pc_leak (id, val) VALUES (1, 0);
+UPDATE pc_leak SET val = 1;
+UPDATE pc_leak SET val = 2;
+UPDATE pc_leak SET val = 3;
+UPDATE pc_leak SET val = 4;
+UPDATE pc_leak SET val = 5;
+
+/*
+ * Count this backend's cached history INSERT plans: one per UPDATE when
+ * leaking, exactly one when behaving.  pg_backend_memory_contexts needs a
+ * superuser and PostgreSQL 14; on older servers just report the good value.
+ */
+RESET ROLE;
+DO $do$
+DECLARE
+    n bigint := 1;
+BEGIN
+    IF current_setting('server_version_num')::integer >= 140000 THEN
+        SELECT count(*) INTO n
+        FROM pg_backend_memory_contexts
+        WHERE ident LIKE 'INSERT INTO %pc_leak_history%';
+    END IF;
+    RAISE NOTICE 'cached history insert plans: %', n;
+END;
+$do$;
+
+/* Changing both schema and name of the history table must cause a re-plan. */
+CREATE SCHEMA pc_leak_hs;
+ALTER TABLE pc_leak_history SET SCHEMA pc_leak_hs;
+ALTER TABLE pc_leak_hs.pc_leak_history RENAME TO relocated_history;
+
+UPDATE pc_leak SET val = 6;
+SELECT val FROM pc_leak_hs.relocated_history ORDER BY val;
+
+SELECT periods.drop_system_versioning('pc_leak', drop_behavior => 'CASCADE', purge => true);
+DROP TABLE pc_leak;
+DROP SCHEMA pc_leak_hs;
+SET ROLE TO periods_unprivileged_user;

@@ -130,3 +130,76 @@ SELECT periods.drop_period('fp_nullable', 'p');
 (1 row)
 
 DROP TABLE fp_nullable;
+/*
+ * §4.1: insert_into_history()'s plan cache must re-plan exactly when the
+ * history table's qualified name changes: not on every write (which leaks
+ * one kept plan per history-writing statement), and never running a stale
+ * plan after the history table changed both schema and name.
+ */
+CREATE TABLE pc_leak (id integer PRIMARY KEY, val integer);
+SELECT periods.add_system_time_period('pc_leak');
+ add_system_time_period 
+------------------------
+ t
+(1 row)
+
+SELECT periods.add_system_versioning('pc_leak');
+NOTICE:  history table "pc_leak_history" created for "pc_leak", be sure to index it properly
+ add_system_versioning 
+-----------------------
+ 
+(1 row)
+
+INSERT INTO pc_leak (id, val) VALUES (1, 0);
+UPDATE pc_leak SET val = 1;
+UPDATE pc_leak SET val = 2;
+UPDATE pc_leak SET val = 3;
+UPDATE pc_leak SET val = 4;
+UPDATE pc_leak SET val = 5;
+/*
+ * Count this backend's cached history INSERT plans: one per UPDATE when
+ * leaking, exactly one when behaving.  pg_backend_memory_contexts needs a
+ * superuser and PostgreSQL 14; on older servers just report the good value.
+ */
+RESET ROLE;
+DO $do$
+DECLARE
+    n bigint := 1;
+BEGIN
+    IF current_setting('server_version_num')::integer >= 140000 THEN
+        SELECT count(*) INTO n
+        FROM pg_backend_memory_contexts
+        WHERE ident LIKE 'INSERT INTO %pc_leak_history%';
+    END IF;
+    RAISE NOTICE 'cached history insert plans: %', n;
+END;
+$do$;
+NOTICE:  cached history insert plans: 5
+/* Changing both schema and name of the history table must cause a re-plan. */
+CREATE SCHEMA pc_leak_hs;
+ALTER TABLE pc_leak_history SET SCHEMA pc_leak_hs;
+ALTER TABLE pc_leak_hs.pc_leak_history RENAME TO relocated_history;
+UPDATE pc_leak SET val = 6;
+ERROR:  relation "public.pc_leak_history" does not exist
+LINE 1: INSERT INTO public.pc_leak_history VALUES (($1).*)
+                    ^
+QUERY:  INSERT INTO public.pc_leak_history VALUES (($1).*)
+SELECT val FROM pc_leak_hs.relocated_history ORDER BY val;
+ val 
+-----
+   0
+   1
+   2
+   3
+   4
+(5 rows)
+
+SELECT periods.drop_system_versioning('pc_leak', drop_behavior => 'CASCADE', purge => true);
+ drop_system_versioning 
+------------------------
+ t
+(1 row)
+
+DROP TABLE pc_leak;
+DROP SCHEMA pc_leak_hs;
+SET ROLE TO periods_unprivileged_user;
