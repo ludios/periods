@@ -2299,9 +2299,9 @@ CREATE TYPE b33_tprange AS RANGE (SUBTYPE = text, SUBTYPE_OPCLASS = text_pattern
 SELECT periods._bounds_check_def('b33_dintrange'::regtype, 's', 'e') AS over_domain,
        periods._bounds_check_def('b33_tprange'::regtype, 's', 'e') AS text_pattern,
        periods._bounds_check_def('daterange'::regtype, 's', 'e') AS builtin;
-   over_domain   |  text_pattern   |     builtin     
------------------+-----------------+-----------------
- CHECK ((s < e)) | CHECK ((s < e)) | CHECK ((s < e))
+   over_domain   |   text_pattern    |     builtin     
+-----------------+-------------------+-----------------
+ CHECK ((s < e)) | CHECK ((s ~<~ e)) | CHECK ((s < e))
 (1 row)
 
 CREATE TABLE b33_dt (id integer, s b33_dint NOT NULL, e b33_dint NOT NULL);
@@ -2343,9 +2343,9 @@ SELECT pg_catalog.pg_get_constraintdef(c.oid) AS bounds_def
 FROM periods.periods AS p
 JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (p.table_name, p.bounds_check_constraint)
 WHERE p.table_name = 'bc_pat'::regclass;
-   bounds_def    
------------------
- CHECK ((s < e))
+    bounds_def     
+-------------------
+ CHECK ((s ~<~ e))
 (1 row)
 
 /* rename_following() must rebuild the same text: renaming the constraint has

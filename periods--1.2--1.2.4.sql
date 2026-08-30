@@ -118,8 +118,7 @@ SELECT coalesce(
               = (oc.opcfamily, oc.opcintype, oc.opcintype, 1)
      JOIN pg_catalog.pg_operator AS o ON o.oid = ao.amopopr
      JOIN pg_catalog.pg_namespace AS n ON n.oid = o.oprnamespace
-     WHERE r.rngtypid = range_type
-       AND o.oprname = '<'),
+     WHERE r.rngtypid = range_type),
     pg_catalog.format('CHECK ((%I < %I))', start_column_name, end_column_name));
 $function$;
 
