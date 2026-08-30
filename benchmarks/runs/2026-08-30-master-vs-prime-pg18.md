@@ -2,7 +2,7 @@
 
 Model-output: Claude Fable 5
 
-- A = `origin/master` b7bc4ea (periods 1.2), B = `prime` b88a2a5 (periods 1.2.4).
+- A = `origin/master` b7bc4ea (periods 1.2), B = `prime` b88a2a5 (periods 7.0.0).
 - PostgreSQL 18.6, release build (no cassert), one copied install + cluster
   per side; fsync/synchronous_commit/full_page_writes/autovacuum/jit off,
   shared_buffers 512MB.
@@ -41,7 +41,7 @@ portion_update         1      1.016      1.178     1016.0     1178.0   +15.9%   
 1. **Parent-side FK coverage rewrite (§2.2/#27)** — the big one, and it
    scales with children per key: +77%/+99%/+275% for deletes at 1/10/100
    children (+66%/+84%/+236% for period-bound updates).  Marginal cost per
-   child row is ~7 µs on 1.2.4 vs ~0.4 µs on 1.2.  Absolute cost stays
+   child row is ~7 µs on 7.0.0 vs ~0.4 µs on 1.2.  Absolute cost stays
    moderate (1.2 ms/statement at 100 children), and 1.2's speed came from
    not actually checking anything (see the #27 sanity probe above).
 2. **search_path pin on the C triggers (§3.2)** — inserts, the pure
@@ -57,10 +57,10 @@ portion_update         1      1.016      1.178     1016.0     1178.0   +15.9%   
 5. **§4.1 plan-cache fix (improvement)** — dominates real update/delete on
    versioned tables: batch updates -29%, batch deletes -60%, single-row
    updates -20%.  1.2 re-planned and leaked the history INSERT plan on every
-   row; 1.2.4 caches it.  This more than pays for candidates 2 and 3 on any
+   row; 7.0.0 caches it.  This more than pays for candidates 2 and 3 on any
    path that writes history.
 
-Net: on ordinary system-versioned DML, 1.2.4 is *faster* than 1.2 wherever a
+Net: on ordinary system-versioned DML, 7.0.0 is *faster* than 1.2 wherever a
 history row is written and a few percent slower on pure inserts.  The only
 regression that grows with data volume is the parent-side FK check, which is
 the price of the check being correct at all; it enters the child table

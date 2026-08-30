@@ -187,7 +187,7 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 
 	/*
 	 * The period's own bound columns are never treated as excluded, whatever
-	 * the catalog says: the SQL API rejects them since 1.2.4, but rows written
+	 * the catalog says: the SQL API rejects them since 7.0.0, but rows written
 	 * by older versions (or restored from a dump of one) may still carry them,
 	 * and honoring those would let updates forge the bounds with no history.
 	 */

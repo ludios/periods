@@ -7,7 +7,7 @@ DATA = periods--1.0.sql \
 	   periods--1.1.sql \
 	   periods--1.1--1.2.sql \
 	   periods--1.2.sql \
-	   periods--1.2--1.2.4.sql
+	   periods--1.2--7.0.0.sql
 
 REGRESS = install \
 		  periods \

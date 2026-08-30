@@ -12,7 +12,7 @@ cross-checked by hand and (for the FK bug) by `codex`.
 
 ## Status (2026-08-30)
 
-Fixes ship as extension version **1.2.4** (`periods--1.2--1.2.4.sql`; a full install script is
+Fixes ship as extension version **7.0.0** (`periods--1.2--7.0.0.sql`; a full install script is
 generated at build time). Every fix has a regression test in the new `bugfixes` suite, committed
 first with the buggy behavior captured, then flipped by the fix commit. All work verified on
 PostgreSQL 17.11 and 18.6.
@@ -53,7 +53,7 @@ PostgreSQL 17.11 and 18.6.
     `drop_foreign_key` authorizes per key against either end, and `add_system_versioning` refuses to
     adopt a history table the caller does not own.  `EXECUTE` stays granted to `PUBLIC` on purpose.
 - **Support change (user decision):** PostgreSQL 9.5/9.6 dropped (`cebff70`) instead of shipping a
-  generated full 1.2.4 install script; fresh installs use the PG10+ chained-script capability.
+  generated full 7.0.0 install script; fresh installs use the PG10+ chained-script capability.
   This also mooted the request for a fabricated pre-10 `bugfixes` expected-output variant.
 - **Deliberately left as design decisions:** §5.3 (TRUNCATE-wipes-history is by design; document loudly
   or block — upstream's call), §6.2 (ADD COLUMN vs history divergence), §6.3 (PG18 leftover named

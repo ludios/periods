@@ -9,10 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 ### Fixed
 
-## [1.2.4] – 2026-08-30
+## [7.0.0] – 2026-08-30
 
-New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
-`ALTER EXTENSION periods UPDATE`.
+New extension SQL version 7.0.0; existing 1.2 installations get the fixes with
+`ALTER EXTENSION periods UPDATE`.  The version number jumps well past upstream's
+so that this fork's releases can never collide with anything
+[xocolatl/periods](https://github.com/xocolatl/periods) publishes later; the
+extension keeps its name so that existing installations upgrade in place.
 
 ### Security
 
@@ -102,7 +105,7 @@ New extension SQL version 1.2.4; existing 1.2 installations get the fixes with
 
 ### Removed
 
-  - Support for PostgreSQL 9.5 and 9.6.  Fresh installations of 1.2.4 rely on
+  - Support for PostgreSQL 9.5 and 9.6.  Fresh installations of 7.0.0 rely on
     `CREATE EXTENSION` applying the base 1.2 script plus the update script,
     which PostgreSQL supports since version 10.
 

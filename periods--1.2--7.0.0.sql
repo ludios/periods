@@ -1,7 +1,7 @@
 -- Model-output: Claude Fable 5
 -- Model-output: Claude Opus 4.8
 -- Model-output: Claude Opus 5
-/* periods--1.2--1.2.4.sql: bug fixes on top of the 1.2 schema (no catalog changes) */
+/* periods--1.2--7.0.0.sql: bug fixes on top of the 1.2 schema (no catalog changes) */
 
 /*
  * The DDL entry points below are SECURITY DEFINER and executable by PUBLIC, and

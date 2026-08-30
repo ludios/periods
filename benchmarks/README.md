@@ -4,7 +4,7 @@ Model-output: Claude Fable 5
 
 An A/B benchmark comparing the per-row DML cost of two builds of the
 `periods` extension — typically `origin/master` (1.2) as side A and a work
-branch (1.2.4) as side B.  Only DML paths are measured (INSERT/UPDATE/DELETE
+branch (7.0.0) as side B.  Only DML paths are measured (INSERT/UPDATE/DELETE
 on tables the extension instruments); one-time DDL such as `add_period()` is
 deliberately out of scope.
 
@@ -16,7 +16,7 @@ deliberately out of scope.
 | `plain_update`      | 1        | control, update path. |
 | `v_insert_single`   | 1        | SYSTEM_TIME + versioning: `generated_always_as_row_start_end()` + `write_history()` per row.  Isolates the §3.2 `search_path` pin on the two C triggers (no history INSERT happens on this path). |
 | `v_insert_batch1k`  | 1000     | same, amplified; per-row µs = txn latency in ms. |
-| `v_update_single`   | 1        | update on a versioned table: pin + `OnlyExcludedColumnsChanged()` + history INSERT (`insert_into_history()`, whose plan cache 1.2 rebuilt and leaked every call — expect 1.2.4 *faster* here). |
+| `v_update_single`   | 1        | update on a versioned table: pin + `OnlyExcludedColumnsChanged()` + history INSERT (`insert_into_history()`, whose plan cache 1.2 rebuilt and leaked every call — expect 7.0.0 *faster* here). |
 | `v_update_batch1k`  | 1000     | same, amplified, rolled back. |
 | `v_delete_batch1k`  | 1000     | delete on a versioned table: pin + history INSERT; no `OnlyExcludedColumnsChanged()`. |
 | `v_update_excl`     | 1        | update touching only an excluded column: `write_history()` returns right after `OnlyExcludedColumnsChanged()`, isolating that query's added join (sol T2) + the pin, with no history INSERT confound. |
@@ -69,5 +69,5 @@ writes `results.csv`, and prints a median-latency summary via
   sol T2 join (regression), and the §4.1 plan-cache fix (improvement).  Use
   `v_insert_*` for the pin alone and `v_update_excl` for pin + T2 join.
 - The `fk_*` scenarios are the ones expected to scale: 1.2's parent-side
-  check was a single (incorrect — #27) probe, 1.2.4 proves coverage for every
+  check was a single (incorrect — #27) probe, 7.0.0 proves coverage for every
   child of the key.

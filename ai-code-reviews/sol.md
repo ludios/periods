@@ -6,8 +6,8 @@ One limitation: I could not run a clean 17/18 source-build/regression matrix in 
 
 # Status of this review's findings (2026-08-30)
 
-The "relatively easy" items were fixed on top of extension version **1.2.4**
-(`periods--1.2--1.2.4.sql`), each with a capture-first regression test in the
+The "relatively easy" items were fixed on top of extension version **7.0.0**
+(`periods--1.2--7.0.0.sql`), each with a capture-first regression test in the
 `bugfixes` suite, a codex-reviewed plan, and verification on PostgreSQL 17.11
 and 18.6.  Items this review shares with claude.md that were already fixed in
 the earlier passes: T1/#27 (§2.2), C1+C2 (§4.1), F2/F4/F5 (§2.3), H6 (§6.1).
@@ -54,7 +54,7 @@ H7 stays a documented design decision (§5.3).
   unwrap the jsonb scalar with `#>> '{}'`, and NULL bounds get a real error.
   A jsonb subtype keeps its native JSON rendering (batch-review finding: its
   JSON strings must stay quoted), restoring the sequence-backed-PK case that
-  worked before 1.2.4; a JSON-null bound is cleanly rejected because
+  worked before 7.0.0; a JSON-null bound is cleanly rejected because
   jsonb_populate_record() cannot represent a jsonb null in the slices (JSON
   null in a record is SQL NULL) — full JSON-null support, like container
   subtypes (arrays, hstore), needs the typed `EXECUTE ... USING` rewrite

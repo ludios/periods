@@ -50,7 +50,7 @@ FROM generate_series(1, :keys) AS k, generate_series(1, :children) AS j;
 RESET session_replication_role;
 
 -- The index a sane schema would have for this FK; both the 1.2 probe and the
--- 1.2.4 coverage scan enter the child table through it.
+-- 7.0.0 coverage scan enter the child table through it.
 CREATE INDEX ON :child (parent_id, valid_from, valid_to);
 
 VACUUM ANALYZE :parent, :child;
