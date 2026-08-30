@@ -1486,17 +1486,10 @@ SELECT periods.add_period('fkb_fk', 'validity', 'vf', 'vt');
 
 /* MATCH PARTIAL: unimplemented, must not be accepted at DDL time */
 SELECT periods.add_foreign_key('fkb_fk', '{uid,uid2}', 'validity', 'fkb_uk2', match_type => 'PARTIAL', key_name => 'fkb_partial');
- add_foreign_key 
------------------
- fkb_partial
-(1 row)
-
+ERROR:  MATCH PARTIAL is not implemented
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 28 at RAISE
 INSERT INTO fkb_uk VALUES (1, 1, 0, 100);
 INSERT INTO fkb_fk VALUES (1, NULL, 10, 20);
-ERROR:  partial not implemented
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 101 at RAISE
-SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
-PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 DELETE FROM fkb_fk;
 SELECT periods.drop_foreign_key('fkb_fk', 'fkb_partial');
  drop_foreign_key 
@@ -1506,50 +1499,30 @@ SELECT periods.drop_foreign_key('fkb_fk', 'fkb_partial');
 
 /* Unsupported referential actions must be rejected up front */
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', delete_action => 'CASCADE');
-ERROR:  new row for relation "foreign_keys" violates check constraint "foreign_keys_delete_action_check"
-DETAIL:  Failing row contains (fkb_fk_uid_validity, fkb_fk, {uid}, validity, fkb_uk1, SIMPLE, CASCADE, NO ACTION, fkb_fk_uid_validity_fk_insert, fkb_fk_uid_validity_fk_update, fkb_fk_uid_validity_uk_update, fkb_fk_uid_validity_uk_delete).
-CONTEXT:  SQL statement "INSERT INTO periods.foreign_keys (key_name, table_name, column_names, period_name, unique_key, match_type, update_action, delete_action,
-                                      fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)
-    VALUES (key_name, table_name, column_names, period_name, unique_row.key_name, match_type, update_action, delete_action,
-            fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)"
-PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 169 at SQL statement
+ERROR:  delete_action CASCADE is not implemented
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 37 at RAISE
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => 'SET NULL');
-ERROR:  new row for relation "foreign_keys" violates check constraint "foreign_keys_update_action_check"
-DETAIL:  Failing row contains (fkb_fk_uid_validity, fkb_fk, {uid}, validity, fkb_uk1, SIMPLE, NO ACTION, SET NULL, fkb_fk_uid_validity_fk_insert, fkb_fk_uid_validity_fk_update, fkb_fk_uid_validity_uk_update, fkb_fk_uid_validity_uk_delete).
-CONTEXT:  SQL statement "INSERT INTO periods.foreign_keys (key_name, table_name, column_names, period_name, unique_key, match_type, update_action, delete_action,
-                                      fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)
-    VALUES (key_name, table_name, column_names, period_name, unique_row.key_name, match_type, update_action, delete_action,
-            fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)"
-PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 169 at SQL statement
+ERROR:  update_action SET NULL is not implemented
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 34 at RAISE
 /* Column-count mismatches in both directions, multidimensional, and empty.
  * (terse: the verbose CONTEXT here is version-dependent wording) */
 \set VERBOSITY terse
 SELECT periods.add_foreign_key('fkb_fk', '{uid,uid2}', 'validity', 'fkb_uk1');
-ERROR:  null values cannot be formatted as an SQL identifier
+ERROR:  number of referencing and referenced columns for foreign key disagree
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk2');
-ERROR:  null values cannot be formatted as an SQL identifier
+ERROR:  number of referencing and referenced columns for foreign key disagree
 SELECT periods.add_foreign_key('fkb_fk', '{{uid,uid2}}', 'validity', 'fkb_uk1');
-ERROR:  cannot concatenate incompatible arrays
+ERROR:  number of referencing and referenced columns for foreign key disagree
 SELECT periods.add_foreign_key('fkb_fk', '{}', 'validity', 'fkb_uk1');
-ERROR:  null values cannot be formatted as an SQL identifier
+ERROR:  no referencing columns specified
 \set VERBOSITY default
 /* Explicit NULL parameters must not reach the catalog inserts */
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', match_type => NULL);
-ERROR:  null value in column "match_type" of relation "foreign_keys" violates not-null constraint
-DETAIL:  Failing row contains (fkb_fk_uid_validity, fkb_fk, {uid}, validity, fkb_uk1, null, NO ACTION, NO ACTION, fkb_fk_uid_validity_fk_insert, fkb_fk_uid_validity_fk_update, fkb_fk_uid_validity_uk_update, fkb_fk_uid_validity_uk_delete).
-CONTEXT:  SQL statement "INSERT INTO periods.foreign_keys (key_name, table_name, column_names, period_name, unique_key, match_type, update_action, delete_action,
-                                      fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)
-    VALUES (key_name, table_name, column_names, period_name, unique_row.key_name, match_type, update_action, delete_action,
-            fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)"
-PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 169 at SQL statement
+ERROR:  no match type specified
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 25 at RAISE
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => NULL);
-ERROR:  null value in column "update_action" of relation "foreign_keys" violates not-null constraint
-DETAIL:  Failing row contains (fkb_fk_uid_validity, fkb_fk, {uid}, validity, fkb_uk1, SIMPLE, NO ACTION, null, fkb_fk_uid_validity_fk_insert, fkb_fk_uid_validity_fk_update, fkb_fk_uid_validity_uk_update, fkb_fk_uid_validity_uk_delete).
-CONTEXT:  SQL statement "INSERT INTO periods.foreign_keys (key_name, table_name, column_names, period_name, unique_key, match_type, update_action, delete_action,
-                                      fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)
-    VALUES (key_name, table_name, column_names, period_name, unique_row.key_name, match_type, update_action, delete_action,
-            fk_insert_trigger, fk_update_trigger, uk_update_trigger, uk_delete_trigger)"
-PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 169 at SQL statement
+ERROR:  no referential action specified
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 31 at RAISE
 /* The supported shape keeps working and enforcing */
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => 'RESTRICT', delete_action => 'RESTRICT', key_name => 'fkb_ok');
  add_foreign_key 
