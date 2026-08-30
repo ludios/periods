@@ -14,8 +14,6 @@ If more external information is needed, think and keep iterating on web search q
 
 If you can't fetch something, try with headless google-chrome or curl_chrome146 on this machine.
 
-If you need some information from e.g. Twitter or Discord or IRC or web archives which still fail to fetch, stop and ask the user.
-
 # Tracking AI authorship
 
 Files with any LLM-authored code (not counting mechanistic sed-like changes) begin with `// Model-output: <model name>`, one per model that contributed (e.g. "Claude Fable 5", "ChatGPT 5.5 Pro"). Keep existing lines.
@@ -54,8 +52,6 @@ These are sometimes in conflict.
 It can help to do it different ways and see which version is better.
 
 Sometimes a program can e.g. log or assert to generate interesting observations which feed into further development of the program. Thus, the program births its own artificial science.
-
-When there are multiple good ways to implement something, especially involving state or the definition of a type: please ask the user. User loves AskUserQuestion.
 
 # After making changes
 
