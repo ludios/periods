@@ -1,10 +1,3 @@
-SELECT CASE
-    WHEN setting::integer >= 170000 THEN '17 ..'::text
-    WHEN setting::integer >= 110000 THEN '11 .. 16'
-    WHEN setting::integer >= 90600 THEN '9.6 .. 10'
-    ELSE '.. 9.5' END
-FROM pg_settings WHERE name = 'server_version_num';
-
 /* Tests for access control on the history tables */
 
 CREATE ROLE periods_acl_1;

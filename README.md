@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-PostgreSQL-blue)](https://www.postgresql.org/about/licence/)
 [![Code of Conduct](https://img.shields.io/badge/code%20of%20conduct-PostgreSQL-blueviolet)](https://www.postgresql.org/about/policies/coc/)
 
-*compatible 10–18*
+*compatible 17–18*
 
 This extension recreates the behavior defined in
 [SQL:2016](https://www.iso.org/standard/63556.html) (originally in

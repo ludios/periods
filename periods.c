@@ -5,12 +5,7 @@
 
 #include "access/htup_details.h"
 #include "access/heapam.h"
-#if (PG_VERSION_NUM < 120000)
-#define table_open(r, l)	heap_open(r, l)
-#define table_close(r, l)	heap_close(r, l)
-#else
 #include "access/table.h"
-#endif
 #include "access/tupconvert.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
@@ -25,10 +20,7 @@
 #include "utils/date.h"
 #include "utils/datum.h"
 #include "utils/elog.h"
-#if (PG_VERSION_NUM < 100000)
-#else
 #include "utils/fmgrprotos.h"
-#endif
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -46,21 +38,12 @@ PG_FUNCTION_INFO_V1(write_history);
 PG_FUNCTION_INFO_V1(outer_user);
 
 /* Define some SQLSTATEs that might not exist */
-#if (PG_VERSION_NUM < 100000)
-#define ERRCODE_GENERATED_ALWAYS MAKE_SQLSTATE('4','2','8','C','9')
-#endif
 #define ERRCODE_INVALID_ROW_VERSION MAKE_SQLSTATE('2','2','0','1','H')
 
 /* We use these a lot, so make aliases for them */
-#if (PG_VERSION_NUM < 100000)
-#define TRANSACTION_TSTZ	TimestampTzGetDatum(GetCurrentTransactionStartTimestamp())
-#define TRANSACTION_TS		DirectFunctionCall1(timestamptz_timestamp, TRANSACTION_TSTZ)
-#define TRANSACTION_DATE	DirectFunctionCall1(timestamptz_date, TRANSACTION_TSTZ)
-#else
 #define TRANSACTION_TSTZ	TimestampTzGetDatum(GetCurrentTransactionStartTimestamp())
 #define TRANSACTION_TS		DirectFunctionCall1(timestamptz_timestamp, TRANSACTION_TSTZ)
 #define TRANSACTION_DATE	DateADTGetDatum(GetSQLCurrentDate())
-#endif
 
 #define INFINITE_TSTZ		TimestampTzGetDatum(DT_NOEND)
 #define INFINITE_TS			TimestampGetDatum(DT_NOEND)
@@ -539,11 +522,7 @@ generated_always_as_row_start_end(PG_FUNCTION_ARGS)
 	columns[1] = end_num;
 	values[1] = GetRowEnd(typeid);
 	nulls[1] = false;
-#if (PG_VERSION_NUM < 100000)
-	new_row = SPI_modifytuple(rel, new_row, 2, columns, values, nulls);
-#else
 	new_row = heap_modify_tuple_by_cols(new_row, new_tupdesc, 2, columns, values, nulls);
-#endif
 
 	return PointerGetDatum(new_row);
 }
@@ -811,18 +790,10 @@ write_history(PG_FUNCTION_ARGS)
 		 *
 		 * See https://github.com/xocolatl/periods/issues/5
 		 */
-#if (PG_VERSION_NUM < 130000)
-		map = convert_tuples_by_name(tupledesc, history_tupledesc, gettext_noop("could not convert row type"));
-#else
 		map = convert_tuples_by_name(tupledesc, history_tupledesc);
-#endif
 		if (map != NULL)
 		{
-#if (PG_VERSION_NUM < 120000)
-			history_tuple = do_convert_tuple(old_row, map);
-#else
 			history_tuple = execute_attr_map_tuple(old_row, map);
-#endif
 			free_conversion_map(map);
 		}
 		else

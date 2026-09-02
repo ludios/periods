@@ -53,8 +53,9 @@ PostgreSQL 17.11 and 18.6.
     `drop_foreign_key` authorizes per key against either end, and `add_system_versioning` refuses to
     adopt a history table the caller does not own.  `EXECUTE` stays granted to `PUBLIC` on purpose.
 - **Support change (user decision):** PostgreSQL 9.5/9.6 dropped (`cebff70`) instead of shipping a
-  generated full 7.0.0 install script; fresh installs use the PG10+ chained-script capability.
-  This also mooted the request for a fabricated pre-10 `bugfixes` expected-output variant.
+  generated full 7.0.0 install script; fresh installs use the chained-script capability.  Later
+  everything before 17 was dropped too: the per-version expected-output variants had gone stale
+  under the 7.0.0 message changes, and 17/18 are the only servers the fixes were verified on.
 - **Deliberately left as design decisions:** §5.3 (TRUNCATE-wipes-history is by design; document loudly
   or block — upstream's call), §6.2 (ADD COLUMN vs history divergence), §6.3 (PG18 leftover named
   NOT NULL constraints on purge; benign).

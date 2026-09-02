@@ -6,9 +6,6 @@
  * https://www.postgresql.org/message-id/flat/c6e8504c-4c43-35fa-6c8f-3c0b80a912cc%402ndquadrant.com
  */
 
-SELECT setting::integer < 120000 AS pre_12
-FROM pg_settings WHERE name = 'server_version_num';
-
 /* Run tests as unprivileged user */
 SET ROLE TO periods_unprivileged_user;
 

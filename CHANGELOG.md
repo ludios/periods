@@ -105,9 +105,10 @@ extension keeps its name so that existing installations upgrade in place.
 
 ### Removed
 
-  - Support for PostgreSQL 9.5 and 9.6.  Fresh installations of 7.0.0 rely on
-    `CREATE EXTENSION` applying the base 1.2 script plus the update script,
-    which PostgreSQL supports since version 10.
+  - Support for PostgreSQL releases before 17.  Fresh installations of 7.0.0
+    rely on `CREATE EXTENSION` applying the base 1.2 script plus the update
+    script, and each regression test has a single expected output, verified on
+    17 and 18.
 
 ### Added
 

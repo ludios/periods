@@ -311,7 +311,6 @@ $function$
 DECLARE
     info record;
     test boolean;
-    generated_columns_sql text;
     generated_columns text[];
 
     jnew jsonb;
@@ -336,52 +335,11 @@ DECLARE
     missing_pk_columns bigint;
     changed_row jsonb;
 
-    SERVER_VERSION CONSTANT integer := current_setting('server_version_num')::integer;
-
     TEST_SQL CONSTANT text :=
         'VALUES (CAST(%2$L AS %1$s) < CAST(%3$L AS %1$s) AND '
         '        CAST(%3$L AS %1$s) < CAST(%4$L AS %1$s))';
 
-    GENERATED_COLUMNS_SQL_PRE_10 CONSTANT text :=
-        'SELECT array_agg(a.attname) '
-        'FROM pg_catalog.pg_attribute AS a '
-        'WHERE a.attrelid = $1 '
-        '  AND a.attnum > 0 '
-        '  AND NOT a.attisdropped '
-        '  AND a.attname NOT IN ($2, $3) '
-        '  AND (pg_catalog.pg_get_serial_sequence(a.attrelid::regclass::text, a.attname) IS NOT NULL '
-        '    OR (EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
-        '                WHERE _c.conrelid = a.attrelid '
-        '                  AND _c.contype = ''p'' '
-        '                  AND _c.conkey @> ARRAY[a.attnum]) '
-        '        AND (a.atthasdef OR EXISTS (SELECT FROM pg_catalog.pg_type AS _t '
-        '                                    WHERE _t.oid = a.atttypid '
-        '                                      AND _t.typdefault IS NOT NULL))) '
-        '    OR EXISTS (SELECT FROM periods.periods AS _p '
-        '               WHERE (_p.table_name, _p.period_name) = (a.attrelid, ''system_time'') '
-        '                 AND a.attname IN (_p.start_column_name, _p.end_column_name)))';
-
-    GENERATED_COLUMNS_SQL_PRE_12 CONSTANT text :=
-        'SELECT array_agg(a.attname) '
-        'FROM pg_catalog.pg_attribute AS a '
-        'WHERE a.attrelid = $1 '
-        '  AND a.attnum > 0 '
-        '  AND NOT a.attisdropped '
-        '  AND a.attname NOT IN ($2, $3) '
-        '  AND (pg_catalog.pg_get_serial_sequence(a.attrelid::regclass::text, a.attname) IS NOT NULL '
-        '    OR a.attidentity <> '''' '
-        '    OR (EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c '
-        '                WHERE _c.conrelid = a.attrelid '
-        '                  AND _c.contype = ''p'' '
-        '                  AND _c.conkey @> ARRAY[a.attnum]) '
-        '        AND (a.atthasdef OR EXISTS (SELECT FROM pg_catalog.pg_type AS _t '
-        '                                    WHERE _t.oid = a.atttypid '
-        '                                      AND _t.typdefault IS NOT NULL))) '
-        '    OR EXISTS (SELECT FROM periods.periods AS _p '
-        '               WHERE (_p.table_name, _p.period_name) = (a.attrelid, ''system_time'') '
-        '                 AND a.attname IN (_p.start_column_name, _p.end_column_name)))';
-
-    GENERATED_COLUMNS_SQL_CURRENT CONSTANT text :=
+    GENERATED_COLUMNS_SQL CONSTANT text :=
         'SELECT array_agg(a.attname) '
         'FROM pg_catalog.pg_attribute AS a '
         'WHERE a.attrelid = $1 '
@@ -509,34 +467,14 @@ BEGIN
          * are never removed: the slices carry freshly computed bounds, which
          * no DEFAULT could know.
          */
-        IF SERVER_VERSION < 100000 THEN
-            generated_columns_sql := GENERATED_COLUMNS_SQL_PRE_10;
-        ELSIF SERVER_VERSION < 120000 THEN
-            generated_columns_sql := GENERATED_COLUMNS_SQL_PRE_12;
-        ELSE
-            generated_columns_sql := GENERATED_COLUMNS_SQL_CURRENT;
-        END IF;
-
-        EXECUTE generated_columns_sql
+        EXECUTE GENERATED_COLUMNS_SQL
         INTO generated_columns
         USING info.table_name, info.start_column_name, info.end_column_name;
 
         /* There may not be any generated columns. */
         IF generated_columns IS NOT NULL THEN
-            IF SERVER_VERSION < 100000 THEN
-                SELECT jsonb_object_agg(e.key, e.value)
-                INTO pre_row
-                FROM jsonb_each(pre_row) AS e (key, value)
-                WHERE e.key <> ALL (generated_columns);
-
-                SELECT jsonb_object_agg(e.key, e.value)
-                INTO post_row
-                FROM jsonb_each(post_row) AS e (key, value)
-                WHERE e.key <> ALL (generated_columns);
-            ELSE
-                pre_row := pre_row - generated_columns;
-                post_row := post_row - generated_columns;
-            END IF;
+            pre_row := pre_row - generated_columns;
+            post_row := post_row - generated_columns;
         END IF;
     END IF;
 

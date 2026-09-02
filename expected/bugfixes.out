@@ -734,7 +734,7 @@ UPDATE fp_spk__for_portion_of_p SET val = 'b', s = 20, e = 30;
 ERROR:  duplicate key value violates unique constraint "fp_spk_pkey"
 DETAIL:  Key (id)=(1) already exists.
 CONTEXT:  SQL statement "INSERT INTO fp_spk (e, id, s, val) SELECT r.e, r.id, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_spk, '{"e": 20, "s": 10, "id": 1, "val": "a"}') AS r"
-PL/pgSQL function periods.update_portion_of() line 303 at EXECUTE
+PL/pgSQL function periods.update_portion_of() line 241 at EXECUTE
 SELECT id, val, s, e FROM fp_spk ORDER BY s;
  id | val | s  | e  
 ----+-----+----+----
@@ -1621,7 +1621,7 @@ SELECT id, val, s, e FROM fp_datep ORDER BY s;
 /* A NULL portion bound is an error, not a garbage cast */
 UPDATE fp_datep__for_portion_of_p SET val = 'c', s = NULL, e = '2020-06-01';
 ERROR:  portion bounds cannot be NULL
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 130 at RAISE
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 88 at RAISE
 SELECT periods.drop_for_portion_view('fp_datep', 'p');
  drop_for_portion_view 
 -----------------------
@@ -1708,7 +1708,7 @@ SELECT val, s, e FROM fp_jb ORDER BY s;
 
 UPDATE fp_jb__for_portion_of_p SET val = 'c', s = 'null', e = '"a"';
 ERROR:  portion bounds cannot be NULL
-CONTEXT:  PL/pgSQL function periods.update_portion_of() line 130 at RAISE
+CONTEXT:  PL/pgSQL function periods.update_portion_of() line 88 at RAISE
 SELECT periods.drop_for_portion_view('fp_jb', 'p');
  drop_for_portion_view 
 -----------------------

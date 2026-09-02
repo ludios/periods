@@ -1,6 +1,3 @@
-SELECT setting::integer < 90600 AS pre_96
-FROM pg_settings WHERE name = 'server_version_num';
-
 /* Run tests as unprivileged user */
 SET ROLE TO periods_unprivileged_user;
 
