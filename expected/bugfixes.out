@@ -234,18 +234,18 @@ INSERT INTO fk_child VALUES (1, 1, 30, 40);
 /* Deleting or shrinking the parent across the child must be blocked. */
 DELETE FROM fk_parent WHERE id = 1;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 UPDATE fk_parent SET s = 35 WHERE id = 1;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
 PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
 /* Changing the key while a child references it must be blocked. */
 UPDATE fk_parent SET id = 2 WHERE id = 1;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
 PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
 /* Changes that keep the child covered are allowed. */
@@ -279,7 +279,7 @@ BEGIN;
 DELETE FROM fk_parent WHERE (id, s) = (1, 35);
 COMMIT;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 SELECT id, s, e FROM fk_parent ORDER BY id, s;
@@ -324,7 +324,7 @@ INSERT INTO fkr_parent VALUES (1, 0, 100);
 INSERT INTO fkr_child VALUES (1, 1, 30, 40);
 DELETE FROM fkr_parent WHERE id = 1;
 ERROR:  update or delete on table "fkr_parent" violates foreign key constraint "fkr_child_parent_id_p" on table "fkr_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 /* Extending the parent period keeps the child covered and is allowed. */
@@ -360,7 +360,7 @@ INSERT INTO fk_selfref VALUES (2, 1, 10, 20);
 /* id 1 is still referenced by id 2. */
 DELETE FROM fk_selfref WHERE id = 1;
 ERROR:  update or delete on table "fk_selfref" violates foreign key constraint "fk_selfref_mgr_p" on table "fk_selfref"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 /* id 2 is referenced by nobody. */
@@ -408,7 +408,7 @@ INSERT INTO sn_parent VALUES (1, 0, 20);
 /* A child with a key that has no parent at all must be rejected. */
 INSERT INTO sn_child VALUES (999, 5, 10);
 ERROR:  insert or update on table "sn_child" violates foreign key constraint "sn_child_id_p"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 118 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 121 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
 PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 /* A properly covered child is accepted. */
@@ -1529,7 +1529,7 @@ SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_
 INSERT INTO fkb_fk VALUES (1, NULL, 10, 20);
 INSERT INTO fkb_fk VALUES (99, NULL, 10, 20);
 ERROR:  insert or update on table "fkb_fk" violates foreign key constraint "fkb_ok"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 118 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 121 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
 PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 DELETE FROM fkb_fk;
@@ -2415,7 +2415,7 @@ SELECT id, val, s, e FROM fp_uk ORDER BY s;
 /* Re-keying the middle slice leaves the child uncovered on [20,30). */
 UPDATE fp_uk__for_portion_of_p SET id = 2, s = 20, e = 30 WHERE id = 1;
 ERROR:  update or delete on table "fp_uk" violates foreign key constraint "fp_uk_child_parent_id_p" on table "fp_uk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
 PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
 SELECT id, val, s, e FROM fp_uk ORDER BY s;
@@ -2480,7 +2480,7 @@ INSERT INTO fkq_child
     SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g
     UNION ALL SELECT 21, 1, 99, 101;
 ERROR:  insert or update on table "fkq_child" violates foreign key constraint "fkq_child_parent_id_p"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 118 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 121 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
 PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 INSERT INTO fkq_child SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g;
@@ -2505,11 +2505,34 @@ ORDER BY t.tgname;
 
 UPDATE fkq_child SET parent_id = parent_id;
 UPDATE fkq_parent SET id = id;
+/* The checks are deferred: what the table holds at COMMIT is what counts. */
+BEGIN;
+INSERT INTO fkq_child VALUES (40, 1, 99, 101);
+DELETE FROM fkq_child WHERE id = 40;
+COMMIT;
+BEGIN;
+UPDATE fkq_child SET parent_id = 999 WHERE id = 1;
+UPDATE fkq_child SET parent_id = 1 WHERE id = 1;
+COMMIT;
+BEGIN;
+INSERT INTO fkq_child VALUES (41, 1, 10, 11);
+UPDATE fkq_child SET parent_id = 999 WHERE id = 41;
+COMMIT;
+ERROR:  insert or update on table "fkq_child" violates foreign key constraint "fkq_child_parent_id_p"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 121 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
+PL/pgSQL function periods.fk_update_check() line 19 at PERFORM
+SELECT count(*) AS children FROM fkq_child;
+ children 
+----------
+       20
+(1 row)
+
 /* A parent segment can go once no child overlaps it. */
 INSERT INTO fkq_child VALUES (30, 1, 60, 70);
 DELETE FROM fkq_parent WHERE (id, s) = (1, 50);
 ERROR:  update or delete on table "fkq_parent" violates foreign key constraint "fkq_child_parent_id_p" on table "fkq_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 DELETE FROM fkq_child WHERE id = 30;
@@ -2523,7 +2546,7 @@ SELECT id, s, e FROM fkq_parent ORDER BY s;
 /* And re-keying the remaining segment orphans the batch. */
 UPDATE fkq_parent SET id = 2;
 ERROR:  update or delete on table "fkq_parent" violates foreign key constraint "fkq_child_parent_id_p" on table "fkq_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
 PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
 SELECT periods.drop_period('fkq_child', 'p', 'CASCADE');
@@ -2540,3 +2563,96 @@ SELECT periods.drop_period('fkq_parent', 'p', 'CASCADE');
 (1 row)
 
 DROP TABLE fkq_parent;
+/* Period bounds whose JSON form is not their input form (arrays) reach the
+ * checks typed, never as text literals. */
+CREATE TYPE fkq_arrrange AS RANGE (subtype = integer[]);
+CREATE TABLE fkq_aparent (id integer, s integer[], e integer[]);
+SELECT periods.add_period('fkq_aparent', 'p', 's', 'e', 'fkq_arrrange');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('fkq_aparent', ARRAY['id'], 'p', key_name => 'fkq_aparent_id_p');
+  add_unique_key  
+------------------
+ fkq_aparent_id_p
+(1 row)
+
+CREATE TABLE fkq_achild (id integer, parent_id integer, s integer[], e integer[]);
+SELECT periods.add_period('fkq_achild', 'p', 's', 'e', 'fkq_arrrange');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_foreign_key('fkq_achild', ARRAY['parent_id'], 'p', 'fkq_aparent_id_p', key_name => 'fkq_achild_parent_id_p');
+    add_foreign_key     
+------------------------
+ fkq_achild_parent_id_p
+(1 row)
+
+INSERT INTO fkq_aparent VALUES (1, '{0}', '{100}');
+INSERT INTO fkq_achild VALUES (1, 1, '{10}', '{20}');
+INSERT INTO fkq_achild VALUES (2, 1, '{90}', '{110}');
+ERROR:  insert or update on table "fkq_achild" violates foreign key constraint "fkq_achild_parent_id_p"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 121 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
+PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
+UPDATE fkq_aparent SET e = '{200}';
+DELETE FROM fkq_aparent;
+ERROR:  update or delete on table "fkq_aparent" violates foreign key constraint "fkq_achild_parent_id_p" on table "fkq_achild"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 122 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
+PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
+DELETE FROM fkq_achild;
+DELETE FROM fkq_aparent;
+SELECT count(*) AS parents FROM fkq_aparent;
+ parents 
+---------
+       0
+(1 row)
+
+SELECT periods.drop_period('fkq_achild', 'p', 'CASCADE');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fkq_achild;
+SELECT periods.drop_period('fkq_aparent', 'p', 'CASCADE');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fkq_aparent;
+DROP TYPE fkq_arrrange;
+/* A unique key adopting the PRIMARY KEY keeps following column renames. */
+CREATE TABLE fkq_pk (id integer, s integer, e integer, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fkq_pk', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('fkq_pk', ARRAY['id'], 'p', key_name => 'fkq_pk_id_p', unique_constraint => 'fkq_pk_pkey');
+ add_unique_key 
+----------------
+ fkq_pk_id_p
+(1 row)
+
+ALTER TABLE fkq_pk RENAME COLUMN id TO ident;
+SELECT column_names, unique_constraint FROM periods.unique_keys WHERE key_name = 'fkq_pk_id_p';
+ column_names | unique_constraint 
+--------------+-------------------
+ {ident}      | fkq_pk_pkey
+(1 row)
+
+SELECT periods.drop_period('fkq_pk', 'p', 'CASCADE');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fkq_pk;

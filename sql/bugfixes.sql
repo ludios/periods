@@ -1212,6 +1212,21 @@ ORDER BY t.tgname;
 UPDATE fkq_child SET parent_id = parent_id;
 UPDATE fkq_parent SET id = id;
 
+/* The checks are deferred: what the table holds at COMMIT is what counts. */
+BEGIN;
+INSERT INTO fkq_child VALUES (40, 1, 99, 101);
+DELETE FROM fkq_child WHERE id = 40;
+COMMIT;
+BEGIN;
+UPDATE fkq_child SET parent_id = 999 WHERE id = 1;
+UPDATE fkq_child SET parent_id = 1 WHERE id = 1;
+COMMIT;
+BEGIN;
+INSERT INTO fkq_child VALUES (41, 1, 10, 11);
+UPDATE fkq_child SET parent_id = 999 WHERE id = 41;
+COMMIT;
+SELECT count(*) AS children FROM fkq_child;
+
 /* A parent segment can go once no child overlaps it. */
 INSERT INTO fkq_child VALUES (30, 1, 60, 70);
 DELETE FROM fkq_parent WHERE (id, s) = (1, 50);
@@ -1225,3 +1240,35 @@ SELECT periods.drop_period('fkq_child', 'p', 'CASCADE');
 DROP TABLE fkq_child;
 SELECT periods.drop_period('fkq_parent', 'p', 'CASCADE');
 DROP TABLE fkq_parent;
+
+/* Period bounds whose JSON form is not their input form (arrays) reach the
+ * checks typed, never as text literals. */
+CREATE TYPE fkq_arrrange AS RANGE (subtype = integer[]);
+CREATE TABLE fkq_aparent (id integer, s integer[], e integer[]);
+SELECT periods.add_period('fkq_aparent', 'p', 's', 'e', 'fkq_arrrange');
+SELECT periods.add_unique_key('fkq_aparent', ARRAY['id'], 'p', key_name => 'fkq_aparent_id_p');
+CREATE TABLE fkq_achild (id integer, parent_id integer, s integer[], e integer[]);
+SELECT periods.add_period('fkq_achild', 'p', 's', 'e', 'fkq_arrrange');
+SELECT periods.add_foreign_key('fkq_achild', ARRAY['parent_id'], 'p', 'fkq_aparent_id_p', key_name => 'fkq_achild_parent_id_p');
+INSERT INTO fkq_aparent VALUES (1, '{0}', '{100}');
+INSERT INTO fkq_achild VALUES (1, 1, '{10}', '{20}');
+INSERT INTO fkq_achild VALUES (2, 1, '{90}', '{110}');
+UPDATE fkq_aparent SET e = '{200}';
+DELETE FROM fkq_aparent;
+DELETE FROM fkq_achild;
+DELETE FROM fkq_aparent;
+SELECT count(*) AS parents FROM fkq_aparent;
+SELECT periods.drop_period('fkq_achild', 'p', 'CASCADE');
+DROP TABLE fkq_achild;
+SELECT periods.drop_period('fkq_aparent', 'p', 'CASCADE');
+DROP TABLE fkq_aparent;
+DROP TYPE fkq_arrrange;
+
+/* A unique key adopting the PRIMARY KEY keeps following column renames. */
+CREATE TABLE fkq_pk (id integer, s integer, e integer, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fkq_pk', 'p', 's', 'e');
+SELECT periods.add_unique_key('fkq_pk', ARRAY['id'], 'p', key_name => 'fkq_pk_id_p', unique_constraint => 'fkq_pk_pkey');
+ALTER TABLE fkq_pk RENAME COLUMN id TO ident;
+SELECT column_names, unique_constraint FROM periods.unique_keys WHERE key_name = 'fkq_pk_id_p';
+SELECT periods.drop_period('fkq_pk', 'p', 'CASCADE');
+DROP TABLE fkq_pk;

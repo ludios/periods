@@ -146,6 +146,29 @@ FROM pg_catalog.pg_event_trigger_ddl_commands() AS c;
 $function$;
 
 /*
+ * A one-row source for a FROM clause: the named columns of row_data, a
+ * row_to_json() image of a row of schema_name.table_name, converted back to
+ * their real types by jsonb_populate_record().  Only those columns are handed
+ * over, so the others stay NULL and column types whose JSON form is not their
+ * input form (hstore) never reach their input function.  The temporal foreign
+ * key validators compare table rows against such images instead of
+ * interpolating the values as text literals, which would have to be typed —
+ * and are not, for an array or composite subtype.
+ */
+CREATE FUNCTION periods._row_image(schema_name name, table_name name, column_names name[], row_data jsonb)
+ RETURNS text
+ LANGUAGE sql
+ STABLE
+AS
+$function$
+SELECT pg_catalog.format('pg_catalog.jsonb_populate_record(NULL::%I.%I, %L)',
+    schema_name,
+    table_name,
+    (SELECT pg_catalog.jsonb_object_agg(u.column_name, row_data -> u.column_name)
+     FROM pg_catalog.unnest(column_names) AS u (column_name)));
+$function$;
+
+/*
  * The query behind every temporal foreign key check, as a format() template:
  * "does some row of the child source lack full coverage by the referenced
  * table?"  A child row is covered when the referenced rows sharing its key
@@ -154,8 +177,7 @@ $function$;
  *
  *   %1$I, %2$I  referenced (unique key) table's schema and name
  *   %3$I, %4$I  referenced table's period start and end columns
- *   %5$s        the child source: the referencing table, or a one-row
- *               record of the row being validated, already formatted
+ *   %5$s        the referencing table, formatted
  *   %6$I, %7$I  referencing table's period start and end columns
  *   %8$s        key correlation, "uk.<col> = fk.<col> AND ..."
  *   %9$s        which child rows to test, or true for all of them
@@ -642,7 +664,8 @@ $function$
 #variable_conflict use_variable
 DECLARE
     foreign_key_info record;
-    fk_source text;
+    row_columns name[];
+    row_filter text DEFAULT 'true';
     violation boolean;
 
 BEGIN
@@ -683,9 +706,7 @@ BEGIN
      * Now that we have all of our names, we can see if there are any nulls in
      * the row we were given (if we were given one).
      */
-    IF row_data IS NULL THEN
-        fk_source := format('%I.%I', foreign_key_info.fk_schema_name, foreign_key_info.fk_table_name);
-    ELSE
+    IF row_data IS NOT NULL THEN
         DECLARE
             column_name name;
             has_nulls boolean;
@@ -719,21 +740,25 @@ BEGIN
             END IF;
 
             /*
-             * Validate only the row we were given.  Its siblings sharing the
-             * key were validated when they were written, and the referenced
-             * side's triggers re-check them whenever it changes; scanning
-             * them again here made a batch of N rows under one key cost
-             * O(N²).  The record carries just the key and period columns;
-             * the rest stay NULL, which keeps column types whose JSON form is
-             * not their input form (hstore) out of the way.
+             * Validate only the row we were given, found again in the table
+             * by its key and period.  Its siblings sharing the key were
+             * validated when they were written, and the referenced side's
+             * triggers re-check them whenever it changes, so scanning them
+             * here made a batch of N rows under one key cost O(N²).  Looking
+             * the row up rather than trusting its image also skips events the
+             * transaction has since made obsolete (the row was deleted, or
+             * changed again): the check is deferred, and only what the table
+             * holds by then counts.
              */
-            fk_source := format('pg_catalog.jsonb_populate_record(NULL::%I.%I, %L)',
-                foreign_key_info.fk_schema_name,
-                foreign_key_info.fk_table_name,
-                (SELECT jsonb_object_agg(u.column_name, row_data -> u.column_name)
-                 FROM unnest(foreign_key_info.fk_column_names
-                             || foreign_key_info.fk_start_column_name
-                             || foreign_key_info.fk_end_column_name) AS u (column_name)));
+            row_columns := foreign_key_info.fk_column_names
+                        || foreign_key_info.fk_start_column_name
+                        || foreign_key_info.fk_end_column_name;
+            row_filter := format('EXISTS (SELECT FROM %s AS r WHERE (%s) = (%s))',
+                periods._row_image(foreign_key_info.fk_schema_name, foreign_key_info.fk_table_name, row_columns, row_data),
+                (SELECT string_agg('fk.' || quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
+                 FROM unnest(row_columns) WITH ORDINALITY AS u (column_name, ordinality)),
+                (SELECT string_agg('r.' || quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
+                 FROM unnest(row_columns) WITH ORDINALITY AS u (column_name, ordinality)));
         END;
     END IF;
 
@@ -742,13 +767,13 @@ BEGIN
                    foreign_key_info.uk_table_name,
                    foreign_key_info.uk_start_column_name,
                    foreign_key_info.uk_end_column_name,
-                   fk_source,
+                   format('%I.%I', foreign_key_info.fk_schema_name, foreign_key_info.fk_table_name),
                    foreign_key_info.fk_start_column_name,
                    foreign_key_info.fk_end_column_name,
                    (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
                     FROM unnest(foreign_key_info.uk_column_names,
                                 foreign_key_info.fk_column_names) AS u (ukc, fkc)),
-                   'true')
+                   row_filter)
     INTO violation;
 
     IF violation THEN
@@ -782,21 +807,9 @@ $function$
 #variable_conflict use_variable
 DECLARE
     foreign_key_info record;
-    column_name name;
-    uk_column_names text[];
-    uk_column_values text[];
-    fk_column_names text;
+    old_image text;
     violation boolean;
     still_matches boolean;
-
-    QSQL CONSTANT text :=
-        'SELECT EXISTS ( '
-        '    SELECT FROM %1$I.%2$I AS t '
-        '    WHERE ROW(%3$s) = ROW(%6$s) '
-        '      AND t.%4$I <= %7$L '
-        '      AND t.%5$I >= %8$L '
-        '%9$s'
-        ')';
 
 BEGIN
     SELECT fc.oid AS fk_table_oid,
@@ -833,29 +846,36 @@ BEGIN
         RAISE EXCEPTION 'foreign key "%" not found', foreign_key_name;
     END IF;
 
-    FOREACH column_name IN ARRAY foreign_key_info.uk_column_names LOOP
-        IF row_data->>column_name IS NULL THEN
-            /*
-             * If the deleted row had nulls in the referenced columns then
-             * there was no possible referencing row (until we implement
-             * PARTIAL) so we can just stop here.
-             */
-            RETURN true;
-        END IF;
-        uk_column_names := uk_column_names || ('t.' || quote_ident(column_name));
-        uk_column_values := uk_column_values || quote_literal(row_data->>column_name);
-    END LOOP;
+    /*
+     * If the deleted row had nulls in the referenced columns then there was
+     * no possible referencing row (until we implement PARTIAL) so we can just
+     * stop here.
+     */
+    IF EXISTS (
+        SELECT FROM unnest(foreign_key_info.uk_column_names) AS u (column_name)
+        WHERE row_data ->> u.column_name IS NULL)
+    THEN
+        RETURN true;
+    END IF;
+
+    /* The old row's key and period, typed, as a one-row source */
+    old_image := periods._row_image(foreign_key_info.uk_schema_name,
+                                    foreign_key_info.uk_table_name,
+                                    foreign_key_info.uk_column_names
+                                    || foreign_key_info.uk_start_column_name
+                                    || foreign_key_info.uk_end_column_name,
+                                    row_data);
 
     IF is_update AND foreign_key_info.update_action = 'NO ACTION' THEN
-        EXECUTE format(QSQL, foreign_key_info.uk_schema_name,
-                             foreign_key_info.uk_table_name,
-                             array_to_string(uk_column_names, ', '),
-                             foreign_key_info.uk_start_column_name,
-                             foreign_key_info.uk_end_column_name,
-                             array_to_string(uk_column_values, ', '),
-                             row_data->>foreign_key_info.uk_start_column_name,
-                             row_data->>foreign_key_info.uk_end_column_name,
-                             'FOR KEY SHARE')
+        /* Does a row with the same key still cover the old period? */
+        EXECUTE format('SELECT EXISTS (SELECT FROM %1$I.%2$I AS uk CROSS JOIN %3$s AS o WHERE %4$s AND uk.%5$I <= o.%5$I AND uk.%6$I >= o.%6$I FOR KEY SHARE OF uk)',
+                       foreign_key_info.uk_schema_name,
+                       foreign_key_info.uk_table_name,
+                       old_image,
+                       (SELECT string_agg(format('uk.%1$I = o.%1$I', u.column_name), ' AND ')
+                        FROM unnest(foreign_key_info.uk_column_names) AS u (column_name)),
+                       foreign_key_info.uk_start_column_name,
+                       foreign_key_info.uk_end_column_name)
         INTO still_matches;
 
         IF still_matches THEN
@@ -876,10 +896,6 @@ BEGIN
      * in this extension RESTRICT differs from NO ACTION only in the timing of
      * the check, per the comments in uk_update_check()/uk_delete_check().
      */
-    SELECT string_agg('fk.' || quote_ident(u.c), ', ' ORDER BY u.ordinality)
-    INTO fk_column_names
-    FROM unnest(foreign_key_info.fk_column_names) WITH ORDINALITY AS u (c, ordinality);
-
     /*
      * Only children of this key whose period overlaps the old row's can have
      * lost coverage: the others were covered by other referenced rows, and
@@ -896,13 +912,15 @@ BEGIN
                    (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
                     FROM unnest(foreign_key_info.uk_column_names,
                                 foreign_key_info.fk_column_names) AS u (ukc, fkc)),
-                   format('(%s) = (%s) AND fk.%I < %L AND fk.%I > %L',
-                          fk_column_names,
-                          array_to_string(uk_column_values, ', '),
+                   format('EXISTS (SELECT FROM %s AS o WHERE %s AND fk.%I < o.%I AND fk.%I > o.%I)',
+                          old_image,
+                          (SELECT string_agg(format('fk.%I = o.%I', fkc, ukc), ' AND ')
+                           FROM unnest(foreign_key_info.fk_column_names,
+                                       foreign_key_info.uk_column_names) AS u (fkc, ukc)),
                           foreign_key_info.fk_start_column_name,
-                          row_data->>foreign_key_info.uk_end_column_name,
+                          foreign_key_info.uk_end_column_name,
                           foreign_key_info.fk_end_column_name,
-                          row_data->>foreign_key_info.uk_start_column_name))
+                          foreign_key_info.uk_start_column_name))
     INTO violation;
 
     IF violation THEN
@@ -2795,7 +2813,7 @@ BEGIN
     UPDATE periods.unique_keys AS uk
     SET column_names = a.column_names
     FROM periods.periods AS p
-    JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name AND c.contype = 'u'
+    JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name AND c.contype IN ('p', 'u')
     CROSS JOIN LATERAL (
         SELECT array_agg(a.attname ORDER BY u.ordinality) AS column_names
         FROM unnest(c.conkey) WITH ORDINALITY AS u (attnum, ordinality)
