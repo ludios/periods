@@ -41,86 +41,87 @@ PG_FUNCTION_INFO_V1(outer_user);
 #define ERRCODE_INVALID_ROW_VERSION MAKE_SQLSTATE('2','2','0','1','H')
 
 /* We use these a lot, so make aliases for them */
-#define TRANSACTION_TSTZ	TimestampTzGetDatum(GetCurrentTransactionStartTimestamp())
-#define TRANSACTION_TS		DirectFunctionCall1(timestamptz_timestamp, TRANSACTION_TSTZ)
-#define TRANSACTION_DATE	DateADTGetDatum(GetSQLCurrentDate())
+#define TRANSACTION_TSTZ TimestampTzGetDatum(GetCurrentTransactionStartTimestamp())
+#define TRANSACTION_TS   DirectFunctionCall1(timestamptz_timestamp, TRANSACTION_TSTZ)
+#define TRANSACTION_DATE DateADTGetDatum(GetSQLCurrentDate())
 
-#define INFINITE_TSTZ		TimestampTzGetDatum(DT_NOEND)
-#define INFINITE_TS			TimestampGetDatum(DT_NOEND)
-#define INFINITE_DATE		DateADTGetDatum(DATEVAL_NOEND)
+#define INFINITE_TSTZ    TimestampTzGetDatum(DT_NOEND)
+#define INFINITE_TS      TimestampGetDatum(DT_NOEND)
+#define INFINITE_DATE    DateADTGetDatum(DATEVAL_NOEND)
 
 /* Plan caches for inserting into history tables */
 static HTAB *InsertHistoryPlanHash = NULL;
 
-typedef struct InsertHistoryPlanEntry
-{
-	Oid			history_relid;	/* the hash key; must be first */
-	char		schemaname[NAMEDATALEN];
-	char		tablename[NAMEDATALEN];
-	Oid			paramtype;		/* composite type the plan's $1 was prepared with */
-	SPIPlanPtr	qplan;
+typedef struct InsertHistoryPlanEntry {
+	Oid        history_relid;           /* the hash key; must be first */
+	char       schemaname[NAMEDATALEN];
+	char       tablename[NAMEDATALEN];
+	Oid        paramtype;               /* composite type the plan's $1 was prepared with */
+	SPIPlanPtr qplan;
 } InsertHistoryPlanEntry;
 
 static HTAB *
-CreateInsertHistoryPlanHash(void)
-{
-	HASHCTL	ctl;
+CreateInsertHistoryPlanHash(void) {
+	HASHCTL ctl;
 
-	ctl.keysize = sizeof(Oid);
+	ctl.keysize   = sizeof(Oid);
 	ctl.entrysize = sizeof(InsertHistoryPlanEntry);
 
 	return hash_create("Insert History Hash", 16, &ctl, HASH_ELEM | HASH_BLOBS);
 }
 
 static void
-GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **end_name)
-{
-	int				ret;
-	Datum			values[2];
-	SPITupleTable  *tuptable;
-	bool			is_null;
-	Datum			dat;
-	MemoryContext	mcxt = CurrentMemoryContext; /* The context outside of SPI */
+GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **end_name) {
+	int            ret;
+	Datum          values[2];
+	SPITupleTable *tuptable;
+	bool           is_null;
+	Datum          dat;
+	MemoryContext  mcxt = CurrentMemoryContext; /* The context outside of SPI */
 
 	const char *sql =
-		"SELECT p.start_column_name, p.end_column_name "
-		"FROM periods.periods AS p "
-		"WHERE (p.table_name, p.period_name) = ($1, $2)";
+	    "SELECT p.start_column_name, p.end_column_name "
+	    "FROM periods.periods AS p "
+	    "WHERE (p.table_name, p.period_name) = ($1, $2)";
 	static SPIPlanPtr qplan = NULL;
 
-	if (SPI_connect() != SPI_OK_CONNECT)
+	if (SPI_connect() != SPI_OK_CONNECT) {
 		elog(ERROR, "SPI_connect failed");
+	}
 
 	/*
 	 * Query the periods table to get the start and end columns.
 	 * Cache the plan if we haven't already.
 	 */
-	if (qplan == NULL)
-	{
-		Oid	types[2] = {OIDOID, NAMEOID};
+	if (qplan == NULL) {
+		Oid types[2] = {OIDOID, NAMEOID};
 
 		qplan = SPI_prepare(sql, 2, types);
-		if (qplan == NULL)
+		if (qplan == NULL) {
 			elog(ERROR, "SPI_prepare returned %s for %s",
-				 SPI_result_code_string(SPI_result), sql);
+			     SPI_result_code_string(SPI_result), sql);
+		}
 
 		ret = SPI_keepplan(qplan);
-		if (ret != 0)
+		if (ret != 0) {
 			elog(ERROR, "SPI_keepplan returned %s", SPI_result_code_string(ret));
+		}
 	}
 
 	values[0] = ObjectIdGetDatum(rel->rd_id);
 	values[1] = CStringGetDatum(period_name);
 	ret = SPI_execute_plan(qplan, values, NULL, true, 0);
-	if (ret != SPI_OK_SELECT)
+	if (ret != SPI_OK_SELECT) {
 		elog(ERROR, "SPI_execute returned %s", SPI_result_code_string(ret));
+	}
 
 	/* Make sure we got one */
-	if (SPI_processed == 0)
+	if (SPI_processed == 0) {
 		ereport(ERROR,
-				(errmsg("period \"%s\" not found on table \"%s\"",
-						period_name,
-						RelationGetRelationName(rel))));
+		        (errmsg("period \"%s\" not found on table \"%s\"",
+		                period_name,
+		                RelationGetRelationName(rel))));
+	}
 
 	/* There is a unique constraint so there shouldn't be more than 1 row */
 	Assert(SPI_processed == 1);
@@ -132,22 +133,21 @@ GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **
 	tuptable = SPI_tuptable;
 
 	dat = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &is_null);
-	if (is_null)
-	{
+	if (is_null) {
 		elog(ERROR, "unexpected NULL start column name for period \"%s\"", period_name);
 	}
 	*start_name = MemoryContextStrdup(mcxt, NameStr(*(DatumGetName(dat))));
 
 	dat = SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 2, &is_null);
-	if (is_null)
-	{
+	if (is_null) {
 		elog(ERROR, "unexpected NULL end column name for period \"%s\"", period_name);
 	}
 	*end_name = MemoryContextStrdup(mcxt, NameStr(*(DatumGetName(dat))));
 
 	/* All done with SPI */
-	if (SPI_finish() != SPI_OK_FINISH)
+	if (SPI_finish() != SPI_OK_FINISH) {
 		elog(ERROR, "SPI_finish failed");
+	}
 }
 
 /*
@@ -158,15 +158,14 @@ GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **
  * it.
  */
 static bool
-OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
-{
-	int				ret;
-	int				i;
-	uint64			row;
-	Datum			values[1];
-	TupleDesc		tupdesc = RelationGetDescr(rel);
-	Bitmapset	   *excluded_attnums = NULL;
-	MemoryContext	mcxt = CurrentMemoryContext; /* The context outside of SPI */
+OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row) {
+	int           ret;
+	int           i;
+	uint64        row;
+	Datum         values[1];
+	TupleDesc     tupdesc          = RelationGetDescr(rel);
+	Bitmapset    *excluded_attnums = NULL;
+	MemoryContext mcxt             = CurrentMemoryContext; /* The context outside of SPI */
 
 	/*
 	 * The period's own bound columns are never treated as excluded, whatever
@@ -175,71 +174,73 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 	 * and honoring those would let updates forge the bounds with no history.
 	 */
 	const char *sql =
-		"SELECT u.name "
-		"FROM periods.system_time_periods AS stp "
-		"JOIN periods.periods AS p ON (p.table_name, p.period_name) = (stp.table_name, stp.period_name) "
-		"CROSS JOIN unnest(stp.excluded_column_names) AS u (name) "
-		"WHERE stp.table_name = $1 "
-		"AND u.name NOT IN (p.start_column_name, p.end_column_name)";
+	    "SELECT u.name "
+	    "FROM periods.system_time_periods AS stp "
+	    "JOIN periods.periods AS p ON (p.table_name, p.period_name) = (stp.table_name, stp.period_name) "
+	    "CROSS JOIN unnest(stp.excluded_column_names) AS u (name) "
+	    "WHERE stp.table_name = $1 "
+	    "AND u.name NOT IN (p.start_column_name, p.end_column_name)";
 	static SPIPlanPtr qplan = NULL;
 
-	if (SPI_connect() != SPI_OK_CONNECT)
+	if (SPI_connect() != SPI_OK_CONNECT) {
 		elog(ERROR, "SPI_connect failed");
+	}
 
 	/*
 	 * Get the excluded column names.
 	 * Cache the plan if we haven't already.
 	 */
-	if (qplan == NULL)
-	{
-		Oid	types[1] = {OIDOID};
+	if (qplan == NULL) {
+		Oid types[1] = {OIDOID};
 
 		qplan = SPI_prepare(sql, 1, types);
-		if (qplan == NULL)
+		if (qplan == NULL) {
 			elog(ERROR, "SPI_prepare returned %s for %s",
-				 SPI_result_code_string(SPI_result), sql);
+			     SPI_result_code_string(SPI_result), sql);
+		}
 
 		ret = SPI_keepplan(qplan);
-		if (ret != 0)
+		if (ret != 0) {
 			elog(ERROR, "SPI_keepplan returned %s", SPI_result_code_string(ret));
+		}
 	}
 
 	values[0] = ObjectIdGetDatum(rel->rd_id);
 	ret = SPI_execute_plan(qplan, values, NULL, true, 0);
-	if (ret != SPI_OK_SELECT)
+	if (ret != SPI_OK_SELECT) {
 		elog(ERROR, "SPI_execute returned %s", SPI_result_code_string(ret));
+	}
 
 	/* Construct a bitmap of excluded attnums */
-	if (SPI_processed > 0 && SPI_tuptable != NULL)
-	{
-		TupleDesc	spitupdesc = SPI_tuptable->tupdesc;
-		bool		isnull;
+	if (SPI_processed > 0 && SPI_tuptable != NULL) {
+		TupleDesc spitupdesc = SPI_tuptable->tupdesc;
+		bool      isnull;
 
-		for (row = 0; row < SPI_processed; row++)
-		{
-			HeapTuple	tuple = SPI_tuptable->vals[row];
-			Datum		attdatum;
-			char	   *attname;
-			int16		attnum;
+		for (row = 0; row < SPI_processed; row++) {
+			HeapTuple tuple = SPI_tuptable->vals[row];
+			Datum     attdatum;
+			char     *attname;
+			int16     attnum;
 
 			/* Get the attnum from the column name */
 			attdatum = SPI_getbinval(tuple, spitupdesc, 1, &isnull);
-			if (isnull)
-			{
+			if (isnull) {
 				elog(ERROR, "unexpected NULL excluded column name");
 			}
 			attname = NameStr(*(DatumGetName(attdatum)));
-			attnum = SPI_fnumber(tupdesc, attname);
+			attnum  = SPI_fnumber(tupdesc, attname);
 
 			/* Make sure it's valid (should always be) */
-			if (attnum == SPI_ERROR_NOATTRIBUTE)
+			if (attnum == SPI_ERROR_NOATTRIBUTE) {
 				ereport(ERROR,
-						(errcode(ERRCODE_UNDEFINED_COLUMN),
-						 errmsg("column \"%s\" does not exist", attname)));
+				        (errcode(ERRCODE_UNDEFINED_COLUMN),
+				         errmsg("column \"%s\" does not exist", attname)));
+			}
 
 			/* Just ignore system columns (should never happen) */
-			if (attnum < 0)
+			if (attnum < 0) {
 				continue;
+			}
 
 			/* Add it to the bitmap set */
 			excluded_attnums = bms_add_member(excluded_attnums, attnum);
@@ -249,8 +250,7 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 		 * If we have excluded columns, move the bitmapset out of the SPI
 		 * context.
 		 */
-		if (excluded_attnums != NULL)
-		{
+		if (excluded_attnums != NULL) {
 			MemoryContext spicontext = MemoryContextSwitchTo(mcxt);
 			excluded_attnums = bms_copy(excluded_attnums);
 			MemoryContextSwitchTo(spicontext);
@@ -258,27 +258,30 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 	}
 
 	/* Don't need SPI anymore */
-	if (SPI_finish() != SPI_OK_FINISH)
+	if (SPI_finish() != SPI_OK_FINISH) {
 		elog(ERROR, "SPI_finish failed");
+	}
 
 	/* If there are no excluded columns, then we're done */
-	if (excluded_attnums == NULL)
+	if (excluded_attnums == NULL) {
 		return false;
+	}
 
-	for (i = 1; i <= tupdesc->natts; i++)
-	{
-		Datum	old_datum, new_datum;
-		bool	old_isnull, new_isnull;
-		int16	typlen;
-		bool	typbyval;
+	for (i = 1; i <= tupdesc->natts; i++) {
+		Datum old_datum, new_datum;
+		bool  old_isnull, new_isnull;
+		int16 typlen;
+		bool  typbyval;
 
 		/* Ignore if deleted column */
-		if (TupleDescAttr(tupdesc, i-1)->attisdropped)
+		if (TupleDescAttr(tupdesc, i-1)->attisdropped) {
 			continue;
+		}
 
 		/* Ignore if excluded column */
-		if (bms_is_member(i, excluded_attnums))
+		if (bms_is_member(i, excluded_attnums)) {
 			continue;
+		}
 
 		old_datum = SPI_getbinval(old_row, tupdesc, i, &old_isnull);
 		new_datum = SPI_getbinval(new_row, tupdesc, i, &new_isnull);
@@ -287,18 +290,21 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
 		 * If one value is NULL and other is not, then they are certainly not
 		 * equal.
 		 */
-		if (old_isnull != new_isnull)
+		if (old_isnull != new_isnull) {
 			return false;
+		}
 
 		/* If both are NULL, they can be considered equal. */
-		if (old_isnull)
+		if (old_isnull) {
 			continue;
+		}
 
 		/* Do a fairly strict binary comparison of the values */
-		typlen = TupleDescAttr(tupdesc, i-1)->attlen;
+		typlen   = TupleDescAttr(tupdesc, i-1)->attlen;
 		typbyval = TupleDescAttr(tupdesc, i-1)->attbyval;
-		if (!datumIsEqual(old_datum, new_datum, typbyval, typlen))
+		if (!datumIsEqual(old_datum, new_datum, typbyval, typlen)) {
 			return false;
+		}
 	}
 
 	return true;
@@ -310,51 +316,53 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row)
  * InvalidOid is returned.
  */
 static Oid
-GetHistoryTable(Relation rel)
-{
-	int		ret;
-	Datum	values[1];
-	Oid		result;
-	SPITupleTable  *tuptable;
-	bool			is_null;
+GetHistoryTable(Relation rel) {
+	int            ret;
+	Datum          values[1];
+	Oid            result;
+	SPITupleTable *tuptable;
+	bool           is_null;
 
 	const char *sql =
-		"SELECT history_table_name::oid "
-		"FROM periods.system_versioning AS sv "
-		"WHERE sv.table_name = $1";
+	    "SELECT history_table_name::oid "
+	    "FROM periods.system_versioning AS sv "
+	    "WHERE sv.table_name = $1";
 	static SPIPlanPtr qplan = NULL;
 
-	if (SPI_connect() != SPI_OK_CONNECT)
+	if (SPI_connect() != SPI_OK_CONNECT) {
 		elog(ERROR, "SPI_connect failed");
+	}
 
 	/*
 	 * Check existence in system_versioning table.
 	 * Cache the plan if we haven't already.
 	 */
-	if (qplan == NULL)
-	{
-		Oid	types[1] = {OIDOID};
+	if (qplan == NULL) {
+		Oid types[1] = {OIDOID};
 
 		qplan = SPI_prepare(sql, 1, types);
-		if (qplan == NULL)
+		if (qplan == NULL) {
 			elog(ERROR, "SPI_prepare returned %s for %s",
-				 SPI_result_code_string(SPI_result), sql);
+			     SPI_result_code_string(SPI_result), sql);
+		}
 
 		ret = SPI_keepplan(qplan);
-		if (ret != 0)
+		if (ret != 0) {
 			elog(ERROR, "SPI_keepplan returned %s", SPI_result_code_string(ret));
+		}
 	}
 
 	values[0] = ObjectIdGetDatum(rel->rd_id);
 	ret = SPI_execute_plan(qplan, values, NULL, true, 0);
-	if (ret != SPI_OK_SELECT)
+	if (ret != SPI_OK_SELECT) {
 		elog(ERROR, "SPI_execute returned %s", SPI_result_code_string(ret));
+	}
 
 	/* Did we get one? */
-	if (SPI_processed == 0)
-	{
-		if (SPI_finish() != SPI_OK_FINISH)
+	if (SPI_processed == 0) {
+		if (SPI_finish() != SPI_OK_FINISH) {
 			elog(ERROR, "SPI_finish failed");
+		}
 		return InvalidOid;
 	}
 
@@ -364,22 +372,20 @@ GetHistoryTable(Relation rel)
 	/* Get oid from results */
 	tuptable = SPI_tuptable;
 	result = DatumGetObjectId(SPI_getbinval(tuptable->vals[0], tuptable->tupdesc, 1, &is_null));
-	if (is_null)
-	{
+	if (is_null) {
 		elog(ERROR, "unexpected NULL history table name");
 	}
 
-	if (SPI_finish() != SPI_OK_FINISH)
+	if (SPI_finish() != SPI_OK_FINISH) {
 		elog(ERROR, "SPI_finish failed");
+	}
 
 	return result;
 }
 
 static Datum
-GetRowStart(Oid typeid)
-{
-	switch (typeid)
-	{
+GetRowStart(Oid typeid) {
+	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return TRANSACTION_TSTZ;
 		case TIMESTAMPOID:
@@ -388,15 +394,13 @@ GetRowStart(Oid typeid)
 			return TRANSACTION_DATE;
 		default:
 			elog(ERROR, "unexpected type: %d", typeid);
-			return 0;	/* keep compiler quiet */
+			return 0; /* keep compiler quiet */
 	}
 }
 
 static Datum
-GetRowEnd(Oid typeid)
-{
-	switch (typeid)
-	{
+GetRowEnd(Oid typeid) {
+	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return INFINITE_TSTZ;
 		case TIMESTAMPOID:
@@ -405,15 +409,13 @@ GetRowEnd(Oid typeid)
 			return INFINITE_DATE;
 		default:
 			elog(ERROR, "unexpected type: %d", typeid);
-			return 0;	/* keep compiler quiet */
+			return 0; /* keep compiler quiet */
 	}
 }
 
 static int
-CompareWithCurrentDatum(Oid typeid, Datum value)
-{
-	switch (typeid)
-	{
+CompareWithCurrentDatum(Oid typeid, Datum value) {
+	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return DatumGetInt32(DirectFunctionCall2(timestamp_cmp, value, TRANSACTION_TSTZ));
 
@@ -425,15 +427,13 @@ CompareWithCurrentDatum(Oid typeid, Datum value)
 
 		default:
 			elog(ERROR, "unexpected type: %d", typeid);
-			return 0;	/* keep compiler quiet */
+			return 0; /* keep compiler quiet */
 	}
 }
 
 static int
-CompareWithInfiniteDatum(Oid typeid, Datum value)
-{
-	switch (typeid)
-	{
+CompareWithInfiniteDatum(Oid typeid, Datum value) {
+	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return DatumGetInt32(DirectFunctionCall2(timestamp_cmp, value, INFINITE_TSTZ));
 
@@ -445,120 +445,119 @@ CompareWithInfiniteDatum(Oid typeid, Datum value)
 
 		default:
 			elog(ERROR, "unexpected type: %d", typeid);
-			return 0;	/* keep compiler quiet */
+			return 0; /* keep compiler quiet */
 	}
 }
 
 Datum
-generated_always_as_row_start_end(PG_FUNCTION_ARGS)
-{
-	TriggerData	   *trigdata = castNode(TriggerData, fcinfo->context);
-	const char	   *funcname = "generated_always_as_row_start_end";
-	Relation		rel;
-	HeapTuple		new_row;
-	TupleDesc		new_tupdesc;
-	Datum			values[2];
-	bool			nulls[2];
-	int				columns[2];
-	char		   *start_name, *end_name;
-	int16			start_num, end_num;
-	Oid				typeid;
+generated_always_as_row_start_end(PG_FUNCTION_ARGS) {
+	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
+	const char  *funcname = "generated_always_as_row_start_end";
+	Relation     rel;
+	HeapTuple    new_row;
+	TupleDesc    new_tupdesc;
+	Datum        values[2];
+	bool         nulls[2];
+	int          columns[2];
+	char        *start_name, *end_name;
+	int16        start_num, end_num;
+	Oid          typeid;
 
 	/*
 	 * Make sure this is being called as an BEFORE ROW trigger.  Note:
 	 * translatable error strings are shared with ri_triggers.c, so resist the
 	 * temptation to fold the function name into them.
 	 */
-	if (!CALLED_AS_TRIGGER(fcinfo))
+	if (!CALLED_AS_TRIGGER(fcinfo)) {
 		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" was not called by trigger manager",
-						funcname)));
+		        (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+		         errmsg("function \"%s\" was not called by trigger manager",
+		                funcname)));
+	}
 
 	if (!TRIGGER_FIRED_BEFORE(trigdata->tg_event) ||
-		!TRIGGER_FIRED_FOR_ROW(trigdata->tg_event))
+	    !TRIGGER_FIRED_FOR_ROW(trigdata->tg_event)) {
 		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" must be fired BEFORE ROW",
-						funcname)));
+		        (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+		         errmsg("function \"%s\" must be fired BEFORE ROW",
+		                funcname)));
+	}
 
 	/* Get Relation information */
-	rel = trigdata->tg_relation;
+	rel         = trigdata->tg_relation;
 	new_tupdesc = RelationGetDescr(rel);
 
 	/* Get the new data that was inserted/updated */
-	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
+	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event)) {
 		new_row = trigdata->tg_trigtuple;
-	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-	{
+	} else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event)) {
 		HeapTuple old_row;
 
 		old_row = trigdata->tg_trigtuple;
 		new_row = trigdata->tg_newtuple;
 
 		/* Don't change anything if only excluded columns are being updated. */
-		if (OnlyExcludedColumnsChanged(rel, old_row, new_row))
+		if (OnlyExcludedColumnsChanged(rel, old_row, new_row)) {
 			return PointerGetDatum(new_row);
-	}
-	else
-	{
+		}
+	} else {
 		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" must be fired for INSERT or UPDATE",
-						funcname)));
-		new_row = NULL;			/* keep compiler quiet */
+		        (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+		         errmsg("function \"%s\" must be fired for INSERT or UPDATE",
+		                funcname)));
+		new_row = NULL; /* keep compiler quiet */
 	}
 
 	GetPeriodColumnNames(rel, "system_time", &start_name, &end_name);
 
 	/* Get the column numbers and type */
 	start_num = SPI_fnumber(new_tupdesc, start_name);
-	end_num = SPI_fnumber(new_tupdesc, end_name);
-	typeid = SPI_gettypeid(new_tupdesc, start_num);
+	end_num   = SPI_fnumber(new_tupdesc, end_name);
+	typeid    = SPI_gettypeid(new_tupdesc, start_num);
 
 	columns[0] = start_num;
-	values[0] = GetRowStart(typeid);
-	nulls[0] = false;
+	values[0]  = GetRowStart(typeid);
+	nulls[0]   = false;
 	columns[1] = end_num;
-	values[1] = GetRowEnd(typeid);
-	nulls[1] = false;
-	new_row = heap_modify_tuple_by_cols(new_row, new_tupdesc, 2, columns, values, nulls);
+	values[1]  = GetRowEnd(typeid);
+	nulls[1]   = false;
+	new_row    = heap_modify_tuple_by_cols(new_row, new_tupdesc, 2, columns, values, nulls);
 
 	return PointerGetDatum(new_row);
 }
 
 static void
-insert_into_history(Relation history_rel, HeapTuple history_tuple)
-{
-	InsertHistoryPlanEntry   *hentry;
-	bool		found;
-	char	   *schemaname = SPI_getnspname(history_rel);
-	char	   *tablename = SPI_getrelname(history_rel);
-	Oid			history_relid = history_rel->rd_id;
-	Oid			type = HeapTupleHeaderGetTypeId(history_tuple->t_data);
-	Datum		value;
-	int			ret;
+insert_into_history(Relation history_rel, HeapTuple history_tuple) {
+	InsertHistoryPlanEntry *hentry;
+	bool   found;
+	char  *schemaname    = SPI_getnspname(history_rel);
+	char  *tablename     = SPI_getrelname(history_rel);
+	Oid    history_relid = history_rel->rd_id;
+	Oid    type          = HeapTupleHeaderGetTypeId(history_tuple->t_data);
+	Datum  value;
+	int    ret;
 
-	if (SPI_connect() != SPI_OK_CONNECT)
+	if (SPI_connect() != SPI_OK_CONNECT) {
 		elog(ERROR, "SPI_connect failed");
+	}
 
-	if (!InsertHistoryPlanHash)
+	if (!InsertHistoryPlanHash) {
 		InsertHistoryPlanHash = CreateInsertHistoryPlanHash();
+	}
 
 	/* Fetch the cached plan */
 	hentry = (InsertHistoryPlanEntry *) hash_search(
-			InsertHistoryPlanHash,
-			&history_relid,
-			HASH_ENTER,
-			&found);
+	        InsertHistoryPlanHash,
+	        &history_relid,
+	        HASH_ENTER,
+	        &found);
 
 	/* dynahash only copies the key; make a fresh entry presentable */
-	if (!found)
-	{
+	if (!found) {
 		hentry->schemaname[0] = '\0';
-		hentry->tablename[0] = '\0';
-		hentry->paramtype = InvalidOid;
-		hentry->qplan = NULL;
+		hentry->tablename[0]  = '\0';
+		hentry->paramtype     = InvalidOid;
+		hentry->qplan         = NULL;
 	}
 
 	/*
@@ -566,172 +565,167 @@ insert_into_history(Relation history_rel, HeapTuple history_tuple)
 	 * composite type changed since it was prepared, re-plan it.
 	 */
 	if (hentry->qplan == NULL ||
-		strcmp(hentry->schemaname, schemaname) != 0 ||
-		strcmp(hentry->tablename, tablename) != 0 ||
-		hentry->paramtype != type)
-	{
-		StringInfo	buf = makeStringInfo();
-		SPIPlanPtr	qplan;
+	    strcmp(hentry->schemaname, schemaname) != 0 ||
+	    strcmp(hentry->tablename, tablename) != 0 ||
+	    hentry->paramtype != type) {
+		StringInfo buf = makeStringInfo();
+		SPIPlanPtr qplan;
 
 		appendStringInfo(buf, "INSERT INTO %s VALUES (($1).*)",
-				quote_qualified_identifier(schemaname, tablename));
+		        quote_qualified_identifier(schemaname, tablename));
 
 		qplan = SPI_prepare(buf->data, 1, &type);
-		if (qplan == NULL)
+		if (qplan == NULL) {
 			elog(ERROR, "SPI_prepare returned %s for %s",
-				 SPI_result_code_string(SPI_result), buf->data);
+			     SPI_result_code_string(SPI_result), buf->data);
+		}
 
 		ret = SPI_keepplan(qplan);
-		if (ret != 0)
+		if (ret != 0) {
 			elog(ERROR, "SPI_keepplan returned %s", SPI_result_code_string(ret));
+		}
 
 		/*
 		 * Replace the previous plan only once its successor is safely kept, so
 		 * that erroring out above cannot leave a freed plan in the cache.
 		 */
-		if (hentry->qplan != NULL)
-		{
+		if (hentry->qplan != NULL) {
 			SPI_freeplan(hentry->qplan);
 		}
 
 		strlcpy(hentry->schemaname, schemaname, sizeof(hentry->schemaname));
-		strlcpy(hentry->tablename, tablename, sizeof(hentry->tablename));
+		strlcpy(hentry->tablename,  tablename,  sizeof(hentry->tablename));
 		hentry->paramtype = type;
-		hentry->qplan = qplan;
+		hentry->qplan     = qplan;
 	}
 
 	/* Do the INSERT */
 	value = HeapTupleGetDatum(history_tuple);
 	ret = SPI_execute_plan(hentry->qplan, &value, NULL, false, 0);
-	if (ret != SPI_OK_INSERT)
+	if (ret != SPI_OK_INSERT) {
 		elog(ERROR, "SPI_execute returned %s", SPI_result_code_string(ret));
+	}
 
-	if (SPI_finish() != SPI_OK_FINISH)
+	if (SPI_finish() != SPI_OK_FINISH) {
 		elog(ERROR, "SPI_finish failed");
+	}
 }
 
 Datum
-write_history(PG_FUNCTION_ARGS)
-{
-	TriggerData	   *trigdata = castNode(TriggerData, fcinfo->context);
-	const char	   *funcname = "write_history";
-	Relation		rel;
-	HeapTuple		old_row, new_row;
-	TupleDesc		tupledesc;
-	char		   *start_name, *end_name;
-	int16			start_num, end_num;
-	Oid				typeid;
-	bool			is_null;
-	Datum			old_start_datum;
-	Oid				history_id;
-	int				cmp;
+write_history(PG_FUNCTION_ARGS) {
+	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
+	const char  *funcname = "write_history";
+	Relation     rel;
+	HeapTuple    old_row, new_row;
+	TupleDesc    tupledesc;
+	char        *start_name, *end_name;
+	int16        start_num, end_num;
+	Oid          typeid;
+	bool         is_null;
+	Datum        old_start_datum;
+	Oid          history_id;
+	int          cmp;
 
 	/*
 	 * Make sure this is being called as an AFTER ROW trigger.  Note:
 	 * translatable error strings are shared with ri_triggers.c, so resist the
 	 * temptation to fold the function name into them.
 	 */
-	if (!CALLED_AS_TRIGGER(fcinfo))
+	if (!CALLED_AS_TRIGGER(fcinfo)) {
 		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" was not called by trigger manager",
-						funcname)));
+		        (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+		         errmsg("function \"%s\" was not called by trigger manager",
+		                funcname)));
+	}
 
 	if (!TRIGGER_FIRED_AFTER(trigdata->tg_event) ||
-		!TRIGGER_FIRED_FOR_ROW(trigdata->tg_event))
+	    !TRIGGER_FIRED_FOR_ROW(trigdata->tg_event)) {
 		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" must be fired AFTER ROW",
-						funcname)));
+		        (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+		         errmsg("function \"%s\" must be fired AFTER ROW",
+		                funcname)));
+	}
 
 	/* Get Relation information */
-	rel = trigdata->tg_relation;
+	rel       = trigdata->tg_relation;
 	tupledesc = RelationGetDescr(rel);
 
 	/* Get the old data that was updated/deleted */
-	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
-	{
-		old_row = NULL;			/* keep compiler quiet */
+	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event)) {
+		old_row = NULL; /* keep compiler quiet */
 		new_row = trigdata->tg_trigtuple;
-	}
-	else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-	{
+	} else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event)) {
 		old_row = trigdata->tg_trigtuple;
 		new_row = trigdata->tg_newtuple;
 
 		/* If only excluded columns have changed, don't write history. */
-		if (OnlyExcludedColumnsChanged(rel, old_row, new_row))
-		{
+		if (OnlyExcludedColumnsChanged(rel, old_row, new_row)) {
 			return PointerGetDatum(NULL);
 		}
-	}
-	else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
-	{
+	} else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event)) {
 		old_row = trigdata->tg_trigtuple;
-		new_row = NULL;			/* keep compiler quiet */
-	}
-	else
-	{
+		new_row = NULL; /* keep compiler quiet */
+	} else {
 		ereport(ERROR,
-				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("function \"%s\" must be fired for INSERT or UPDATE or DELETE",
-						funcname)));
-		old_row = NULL;			/* keep compiler quiet */
-		new_row = NULL;			/* keep compiler quiet */
+		        (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+		         errmsg("function \"%s\" must be fired for INSERT or UPDATE or DELETE",
+		                funcname)));
+		old_row = NULL; /* keep compiler quiet */
+		new_row = NULL; /* keep compiler quiet */
 	}
 
 	GetPeriodColumnNames(rel, "system_time", &start_name, &end_name);
 
 	/* Get the column numbers and type */
 	start_num = SPI_fnumber(tupledesc, start_name);
-	end_num = SPI_fnumber(tupledesc, end_name);
-	typeid = SPI_gettypeid(tupledesc, start_num);
+	end_num   = SPI_fnumber(tupledesc, end_name);
+	typeid    = SPI_gettypeid(tupledesc, start_num);
 
 	/*
 	 * Validate that the period columns haven't been modified.  This can happen
 	 * with a trigger executed after generated_always_as_row_start_end().
 	 */
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event) ||
-		TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
-	{
-		Datum	start_datum;
-		Datum	end_datum;
-		bool	start_is_null;
-		bool	end_is_null;
+	    TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event)) {
+		Datum start_datum;
+		Datum end_datum;
+		bool  start_is_null;
+		bool  end_is_null;
 
 		start_datum = SPI_getbinval(new_row, tupledesc, start_num, &start_is_null);
-		end_datum = SPI_getbinval(new_row, tupledesc, end_num, &end_is_null);
+		end_datum   = SPI_getbinval(new_row, tupledesc, end_num,   &end_is_null);
 
 		/* Should be impossible, but the columns must never be NULL */
-		if (start_is_null || end_is_null)
-		{
+		if (start_is_null || end_is_null) {
 			elog(ERROR, "unexpected NULL in period bound columns");
 		}
 
-		if (CompareWithCurrentDatum(typeid, start_datum) != 0)
+		if (CompareWithCurrentDatum(typeid, start_datum) != 0) {
 			ereport(ERROR,
-					(errcode(ERRCODE_GENERATED_ALWAYS),
-					 errmsg("cannot insert or update column \"%s\"", start_name),
-					 errdetail("Column \"%s\" is GENERATED ALWAYS AS ROW START", start_name)));
+			        (errcode(ERRCODE_GENERATED_ALWAYS),
+			         errmsg("cannot insert or update column \"%s\"", start_name),
+			         errdetail("Column \"%s\" is GENERATED ALWAYS AS ROW START", start_name)));
+		}
 
-		if (CompareWithInfiniteDatum(typeid, end_datum) != 0)
+		if (CompareWithInfiniteDatum(typeid, end_datum) != 0) {
 			ereport(ERROR,
-					(errcode(ERRCODE_GENERATED_ALWAYS),
-					 errmsg("cannot insert or update column \"%s\"", end_name),
-					 errdetail("Column \"%s\" is GENERATED ALWAYS AS ROW END", end_name)));
+			        (errcode(ERRCODE_GENERATED_ALWAYS),
+			         errmsg("cannot insert or update column \"%s\"", end_name),
+			         errdetail("Column \"%s\" is GENERATED ALWAYS AS ROW END", end_name)));
+		}
 
 		/*
 		 * If this is an INSERT, then we're done because there is no history to
 		 * write.
 		 */
-		if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
+		if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event)) {
 			return PointerGetDatum(NULL);
+		}
 	}
 
 	/* Compare the OLD row's start with the transaction start */
 	old_start_datum = SPI_getbinval(old_row, tupledesc, start_num, &is_null);
-	if (is_null)
-	{
+	if (is_null) {
 		elog(ERROR, "unexpected NULL in period start column");
 	}
 	cmp = CompareWithCurrentDatum(typeid, old_start_datum);
@@ -742,8 +736,9 @@ write_history(PG_FUNCTION_ARGS)
 	 * DELETE: SQL:2016 13.4 GR 15)a)iii)2)
 	 * UPDATE: SQL:2016 15.13 GR 9)a)iii)2)
 	 */
-	if (cmp == 0)
+	if (cmp == 0) {
 		return PointerGetDatum(NULL);
+	}
 
 	/*
 	 * There is a weird case in READ UNCOMMITTED and READ COMMITTED where a
@@ -755,32 +750,32 @@ write_history(PG_FUNCTION_ARGS)
 	 * DELETE: SQL:2016 13.4 GR 15)a)iii)1)
 	 * UPDATE: SQL:2016 15.13 GR 9)a)iii)1)
 	 */
-	if (cmp > 0)
+	if (cmp > 0) {
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_ROW_VERSION),
-				 errmsg("invalid row version"),
-				 errdetail("The row being updated or deleted was created after this transaction started."),
-				 errhint("The transaction might succeed if retried.")));
+		        (errcode(ERRCODE_INVALID_ROW_VERSION),
+		         errmsg("invalid row version"),
+		         errdetail("The row being updated or deleted was created after this transaction started."),
+		         errhint("The transaction might succeed if retried.")));
+	}
 
 	/*
 	 * If this table does not have SYSTEM VERSIONING, there is nothing else to
 	 * be done.
 	 */
 	history_id = GetHistoryTable(rel);
-	if (OidIsValid(history_id))
-	{
-		Relation	history_rel;
-		TupleDesc	history_tupledesc;
-		HeapTuple	history_tuple;
-		int16		history_end_num;
-		TupleConversionMap   *map;
-		Datum	   *values;
-		bool	   *nulls;
+	if (OidIsValid(history_id)) {
+		Relation  history_rel;
+		TupleDesc history_tupledesc;
+		HeapTuple history_tuple;
+		int16     history_end_num;
+		TupleConversionMap *map;
+		Datum    *values;
+		bool     *nulls;
 
 		/* Open the history table for inserting */
-		history_rel = table_open(history_id, RowExclusiveLock);
+		history_rel       = table_open(history_id, RowExclusiveLock);
 		history_tupledesc = RelationGetDescr(history_rel);
-		history_end_num = SPI_fnumber(history_tupledesc, end_name);
+		history_end_num   = SPI_fnumber(history_tupledesc, end_name);
 
 		/*
 		 * We may have to convert the tuple structure between the table and the
@@ -789,13 +784,10 @@ write_history(PG_FUNCTION_ARGS)
 		 * See https://github.com/xocolatl/periods/issues/5
 		 */
 		map = convert_tuples_by_name(tupledesc, history_tupledesc);
-		if (map != NULL)
-		{
+		if (map != NULL) {
 			history_tuple = execute_attr_map_tuple(old_row, map);
 			free_conversion_map(map);
-		}
-		else
-		{
+		} else {
 			history_tuple = old_row;
 
 			/*
@@ -808,12 +800,12 @@ write_history(PG_FUNCTION_ARGS)
 
 		/* Build the new tuple for the history table */
 		values = (Datum *) palloc(history_tupledesc->natts * sizeof(Datum));
-		nulls = (bool *) palloc(history_tupledesc->natts * sizeof(bool));
+		nulls  =  (bool *) palloc(history_tupledesc->natts * sizeof(bool));
 
 		/* Modify the historical ROW END on the fly */
 		heap_deform_tuple(history_tuple, history_tupledesc, values, nulls);
 		values[history_end_num-1] = GetRowStart(typeid);
-		nulls[history_end_num-1] = false;
+		nulls[history_end_num-1]  = false;
 		history_tuple = heap_form_tuple(history_tupledesc, values, nulls);
 
 		pfree(values);
@@ -839,7 +831,6 @@ write_history(PG_FUNCTION_ARGS)
  * Returns the role's OID.
  */
 Datum
-outer_user(PG_FUNCTION_ARGS)
-{
+outer_user(PG_FUNCTION_ARGS) {
 	PG_RETURN_OID(GetOuterUserId());
 }
