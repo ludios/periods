@@ -1179,3 +1179,49 @@ SELECT periods.drop_period('fp_uk_child', 'p', 'CASCADE');
 DROP TABLE fp_uk_child;
 SELECT periods.drop_period('fp_uk', 'p', 'CASCADE');
 DROP TABLE fp_uk;
+
+/*
+ * Temporal foreign key checks after the performance pass: the child-side
+ * check validates only the row being written (a batch of N rows under one
+ * key used to re-validate all N siblings for each of them), the parent-side
+ * check considers only children overlapping the old period, and the update
+ * triggers skip updates that leave the key and period alone.  Every
+ * violation they exist for must still be caught.
+ */
+
+CREATE TABLE fkq_parent (id integer, s integer, e integer);
+SELECT periods.add_period('fkq_parent', 'p', 's', 'e');
+SELECT periods.add_unique_key('fkq_parent', ARRAY['id'], 'p', key_name => 'fkq_parent_id_p');
+CREATE TABLE fkq_child (id integer, parent_id integer, s integer, e integer);
+SELECT periods.add_period('fkq_child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('fkq_child', ARRAY['parent_id'], 'p', 'fkq_parent_id_p', key_name => 'fkq_child_parent_id_p');
+INSERT INTO fkq_parent VALUES (1, 0, 50), (1, 50, 100);
+
+/* A batch of siblings under one key with one of them uncovered is rejected whole. */
+INSERT INTO fkq_child
+    SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g
+    UNION ALL SELECT 21, 1, 99, 101;
+INSERT INTO fkq_child SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g;
+SELECT count(*) AS children FROM fkq_child;
+
+/* The update triggers carry a WHEN condition; the others do not. */
+SELECT t.tgname, t.tgqual IS NOT NULL AS has_when
+FROM pg_catalog.pg_trigger AS t
+WHERE t.tgrelid IN ('fkq_parent'::regclass, 'fkq_child'::regclass) AND NOT t.tgisinternal
+ORDER BY t.tgname;
+UPDATE fkq_child SET parent_id = parent_id;
+UPDATE fkq_parent SET id = id;
+
+/* A parent segment can go once no child overlaps it. */
+INSERT INTO fkq_child VALUES (30, 1, 60, 70);
+DELETE FROM fkq_parent WHERE (id, s) = (1, 50);
+DELETE FROM fkq_child WHERE id = 30;
+DELETE FROM fkq_parent WHERE (id, s) = (1, 50);
+SELECT id, s, e FROM fkq_parent ORDER BY s;
+/* And re-keying the remaining segment orphans the batch. */
+UPDATE fkq_parent SET id = 2;
+
+SELECT periods.drop_period('fkq_child', 'p', 'CASCADE');
+DROP TABLE fkq_child;
+SELECT periods.drop_period('fkq_parent', 'p', 'CASCADE');
+DROP TABLE fkq_parent;

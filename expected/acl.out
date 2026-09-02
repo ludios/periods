@@ -200,7 +200,7 @@ TABLE show_acls ORDER BY sort_order;
 
 GRANT SELECT, UPDATE ON TABLE fpacl__for_portion_of_p TO periods_acl_2; -- fail
 ERROR:  cannot grant SELECT directly to "public.fpacl__for_portion_of_p"; grant SELECT to "public.fpacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 GRANT SELECT, UPDATE ON TABLE fpacl TO periods_acl_2;
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |       object_name       | object_type |    grantee    | privilege_type 
@@ -229,7 +229,7 @@ TABLE show_acls ORDER BY sort_order;
 
 REVOKE UPDATE ON TABLE fpacl__for_portion_of_p FROM periods_acl_2; -- fail
 ERROR:  cannot revoke UPDATE directly from "public.fpacl__for_portion_of_p", revoke UPDATE from "public.fpacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 255 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 256 at RAISE
 REVOKE UPDATE ON TABLE fpacl FROM periods_acl_2;
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |       object_name       | object_type |    grantee    | privilege_type 
@@ -382,13 +382,13 @@ TABLE show_acls ORDER BY sort_order;
 -- These next 6 blocks should fail
 GRANT ALL ON TABLE histacl_history TO periods_acl_3; -- fail
 ERROR:  cannot grant DELETE to "public.histacl_history"; history objects are read-only
-CONTEXT:  PL/pgSQL function periods.health_checks() line 138 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 139 at RAISE
 GRANT SELECT ON TABLE histacl_history TO periods_acl_3; -- fail
 ERROR:  cannot grant SELECT directly to "public.histacl_history"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 REVOKE ALL ON TABLE histacl_history FROM periods_acl_1; -- fail
 ERROR:  cannot revoke SELECT directly from "public.histacl_history", revoke SELECT from "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 255 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 256 at RAISE
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |        object_name         | object_type |    grantee    | privilege_type 
 ------------+-------------+----------------------------+-------------+---------------+----------------
@@ -410,13 +410,13 @@ TABLE show_acls ORDER BY sort_order;
 
 GRANT ALL ON TABLE histacl_with_history TO periods_acl_3; -- fail
 ERROR:  cannot grant DELETE to "public.histacl_with_history"; history objects are read-only
-CONTEXT:  PL/pgSQL function periods.health_checks() line 138 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 139 at RAISE
 GRANT SELECT ON TABLE histacl_with_history TO periods_acl_3; -- fail
 ERROR:  cannot grant SELECT directly to "public.histacl_with_history"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 REVOKE ALL ON TABLE histacl_with_history FROM periods_acl_1; -- fail
 ERROR:  cannot revoke SELECT directly from "public.histacl_with_history", revoke SELECT from "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 255 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 256 at RAISE
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |        object_name         | object_type |    grantee    | privilege_type 
 ------------+-------------+----------------------------+-------------+---------------+----------------
@@ -438,13 +438,13 @@ TABLE show_acls ORDER BY sort_order;
 
 GRANT ALL ON FUNCTION histacl__as_of(timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__as_of(timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 GRANT EXECUTE ON FUNCTION histacl__as_of(timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__as_of(timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 REVOKE ALL ON FUNCTION histacl__as_of(timestamp with time zone) FROM periods_acl_1; -- fail
 ERROR:  cannot revoke EXECUTE directly from "public.histacl__as_of(timestamp with time zone)", revoke SELECT from "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 255 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 256 at RAISE
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |        object_name         | object_type |    grantee    | privilege_type 
 ------------+-------------+----------------------------+-------------+---------------+----------------
@@ -466,13 +466,13 @@ TABLE show_acls ORDER BY sort_order;
 
 GRANT ALL ON FUNCTION histacl__between(timestamp with time zone, timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__between(timestamp with time zone,timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 GRANT EXECUTE ON FUNCTION histacl__between(timestamp with time zone, timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__between(timestamp with time zone,timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 REVOKE ALL ON FUNCTION histacl__between(timestamp with time zone, timestamp with time zone) FROM periods_acl_1; -- fail
 ERROR:  cannot revoke EXECUTE directly from "public.histacl__between(timestamp with time zone,timestamp with time zone)", revoke SELECT from "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 255 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 256 at RAISE
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |        object_name         | object_type |    grantee    | privilege_type 
 ------------+-------------+----------------------------+-------------+---------------+----------------
@@ -494,13 +494,13 @@ TABLE show_acls ORDER BY sort_order;
 
 GRANT ALL ON FUNCTION histacl__between_symmetric(timestamp with time zone, timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__between_symmetric(timestamp with time zone,timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 GRANT EXECUTE ON FUNCTION histacl__between_symmetric(timestamp with time zone, timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__between_symmetric(timestamp with time zone,timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 REVOKE ALL ON FUNCTION histacl__between_symmetric(timestamp with time zone, timestamp with time zone) FROM periods_acl_1; -- fail
 ERROR:  cannot revoke EXECUTE directly from "public.histacl__between_symmetric(timestamp with time zone,timestamp with time zone)", revoke SELECT from "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 255 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 256 at RAISE
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |        object_name         | object_type |    grantee    | privilege_type 
 ------------+-------------+----------------------------+-------------+---------------+----------------
@@ -522,13 +522,13 @@ TABLE show_acls ORDER BY sort_order;
 
 GRANT ALL ON FUNCTION histacl__from_to(timestamp with time zone, timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__from_to(timestamp with time zone,timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 GRANT EXECUTE ON FUNCTION histacl__from_to(timestamp with time zone, timestamp with time zone) TO periods_acl_3; -- fail
 ERROR:  cannot grant EXECUTE directly to "public.histacl__from_to(timestamp with time zone,timestamp with time zone)"; grant SELECT to "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 143 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 144 at RAISE
 REVOKE ALL ON FUNCTION histacl__from_to(timestamp with time zone, timestamp with time zone) FROM periods_acl_1; -- fail
 ERROR:  cannot revoke EXECUTE directly from "public.histacl__from_to(timestamp with time zone,timestamp with time zone)", revoke SELECT from "public.histacl" instead
-CONTEXT:  PL/pgSQL function periods.health_checks() line 255 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 256 at RAISE
 TABLE show_acls ORDER BY sort_order;
  sort_order | schema_name |        object_name         | object_type |    grantee    | privilege_type 
 ------------+-------------+----------------------------+-------------+---------------+----------------

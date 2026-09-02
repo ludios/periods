@@ -123,10 +123,87 @@ $function$;
 
 
 /*
+ * True when every command of the ddl_command_end event being handled only
+ * created objects (or altered a sequence, which we never track), so nothing
+ * we track by name can have been renamed, dropped, re-owned or made unlogged.
+ * The event triggers return at once in that case; without it every
+ * CREATE TEMP TABLE in the database paid for a full audit of every period.
+ *
+ * Commands that report nothing (DROPs, among others) do not count as
+ * harmless: the audit runs for them.
+ */
+CREATE FUNCTION periods._ddl_only_creates()
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SET search_path TO pg_catalog, pg_temp
+AS
+$function$
+SELECT coalesce(
+    pg_catalog.bool_and(c.command_tag LIKE 'CREATE %' OR c.command_tag IN ('SELECT INTO', 'ALTER SEQUENCE', 'COMMENT')),
+    false)
+FROM pg_catalog.pg_event_trigger_ddl_commands() AS c;
+$function$;
+
+/*
+ * The query behind every temporal foreign key check, as a format() template:
+ * "does some row of the child source lack full coverage by the referenced
+ * table?"  A child row is covered when the referenced rows sharing its key
+ * and touching its period, sorted, start no later than it, end no earlier,
+ * and leave no gap between consecutive rows.  Both validators fill it in:
+ *
+ *   %1$I, %2$I  referenced (unique key) table's schema and name
+ *   %3$I, %4$I  referenced table's period start and end columns
+ *   %5$s        the child source: the referencing table, or a one-row
+ *               record of the row being validated, already formatted
+ *   %6$I, %7$I  referencing table's period start and end columns
+ *   %8$s        key correlation, "uk.<col> = fk.<col> AND ..."
+ *   %9$s        which child rows to test, or true for all of them
+ *
+ * FOR KEY SHARE holds the referenced rows against concurrent deletion until
+ * this transaction ends.  No plpgsql BEGIN/EXCEPTION may be used around it:
+ * these checks also run from deferred constraint triggers during COMMIT,
+ * where starting a subtransaction is not allowed.
+ */
+CREATE FUNCTION periods._fk_coverage_sql()
+ RETURNS text
+ LANGUAGE sql
+ IMMUTABLE
+AS
+$function$
+SELECT
+    'SELECT EXISTS ( '
+    '    SELECT FROM %5$s AS fk '
+    '    WHERE NOT EXISTS ( '
+    '        SELECT FROM (SELECT uk.uk_start_value, '
+    '                            uk.uk_end_value, '
+    '                            nullif(lag(uk.uk_end_value) OVER (ORDER BY uk.uk_start_value), uk.uk_start_value) AS x '
+    '                     FROM (SELECT uk.%3$I AS uk_start_value, '
+    '                                  uk.%4$I AS uk_end_value '
+    '                           FROM %1$I.%2$I AS uk '
+    '                           WHERE %8$s '
+    '                             AND uk.%3$I <= fk.%7$I '
+    '                             AND uk.%4$I >= fk.%6$I '
+    '                           FOR KEY SHARE '
+    '                          ) AS uk '
+    '                    ) AS uk '
+    '        WHERE uk.uk_start_value < fk.%7$I '
+    '          AND uk.uk_end_value >= fk.%6$I '
+    '        HAVING min(uk.uk_start_value) <= fk.%6$I '
+    '           AND max(uk.uk_end_value) >= fk.%7$I '
+    '           AND array_agg(uk.x) FILTER (WHERE uk.x IS NOT NULL) IS NULL '
+    '    ) AND %9$s '
+    ')';
+$function$;
+
+/*
  * drop_period() used to DELETE from periods.system_time_periods filtering on
  * table_name alone, so dropping an application-time period also tore down the
  * system_time period' triggers and infinity constraint, silently breaking
  * SYSTEM VERSIONING.  Filter on the period name too.
+ *
+ * The RESTRICT dependency checks now come first, so a refused drop does no
+ * DDL before failing, and the two behaviors share one catalog cleanup.
  */
 CREATE OR REPLACE FUNCTION periods.drop_period(table_name regclass, period_name name, drop_behavior periods.drop_behavior DEFAULT 'RESTRICT', purge boolean DEFAULT false)
  RETURNS boolean
@@ -139,8 +216,6 @@ $function$
 DECLARE
     period_row periods.periods;
     system_time_period_row periods.system_time_periods;
-    system_versioning_row periods.system_versioning;
-    portion_view regclass;
     is_dropped boolean;
 BEGIN
     IF table_name IS NULL THEN
@@ -171,21 +246,6 @@ BEGIN
         RETURN false;
     END IF;
 
-    /* Drop the "for portion" view if it hasn't been dropped already */
-    PERFORM periods.drop_for_portion_view(table_name, period_name, drop_behavior, purge);
-
-    /* If this is a system_time period, get rid of the triggers */
-    DELETE FROM periods.system_time_periods AS stp
-    WHERE (stp.table_name, stp.period_name) = (table_name, period_name)
-    RETURNING stp.* INTO system_time_period_row;
-
-    IF FOUND AND NOT is_dropped THEN
-        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', table_name, system_time_period_row.infinity_check_constraint);
-        EXECUTE format('DROP TRIGGER %I ON %s', system_time_period_row.generated_always_trigger, table_name);
-        EXECUTE format('DROP TRIGGER %I ON %s', system_time_period_row.write_history_trigger, table_name);
-        EXECUTE format('DROP TRIGGER %I ON %s', system_time_period_row.truncate_trigger, table_name);
-    END IF;
-
     IF drop_behavior = 'RESTRICT' THEN
         /* Check for UNIQUE or PRIMARY KEYs */
         IF EXISTS (
@@ -210,50 +270,46 @@ BEGIN
         THEN
             RAISE EXCEPTION 'table % has SYSTEM VERSIONING', table_name;
         END IF;
-
-        /* Remove from catalog */
-        DELETE FROM periods.periods AS p
-        WHERE (p.table_name, p.period_name) = (table_name, period_name);
-
-        /*
-         * Delete the bounds check constraint if purging, unless a recursive
-         * call already removed this period, or another period still uses the
-         * same constraint (add_period adopts a matching pre-existing one).
-         */
-        IF FOUND AND NOT is_dropped AND purge AND NOT EXISTS (
-            SELECT FROM periods.periods AS p
-            WHERE (p.table_name, p.bounds_check_constraint) = (table_name, period_row.bounds_check_constraint))
-        THEN
-            EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I',
-                table_name, period_row.bounds_check_constraint);
-        END IF;
-
-        RETURN true;
     END IF;
 
-    /* We must be in CASCADE mode now */
+    /* Drop the "for portion" view if it hasn't been dropped already */
+    PERFORM periods.drop_for_portion_view(table_name, period_name, drop_behavior, purge);
 
-    PERFORM periods.drop_foreign_key(table_name, fk.key_name)
-    FROM periods.foreign_keys AS fk
-    WHERE (fk.table_name, fk.period_name) = (table_name, period_name);
+    /* If this is a system_time period, get rid of the triggers */
+    DELETE FROM periods.system_time_periods AS stp
+    WHERE (stp.table_name, stp.period_name) = (table_name, period_name)
+    RETURNING stp.* INTO system_time_period_row;
 
-    PERFORM periods.drop_unique_key(table_name, uk.key_name, drop_behavior, purge)
-    FROM periods.unique_keys AS uk
-    WHERE (uk.table_name, uk.period_name) = (table_name, period_name);
+    IF FOUND AND NOT is_dropped THEN
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', table_name, system_time_period_row.infinity_check_constraint);
+        EXECUTE format('DROP TRIGGER %I ON %s', system_time_period_row.generated_always_trigger, table_name);
+        EXECUTE format('DROP TRIGGER %I ON %s', system_time_period_row.write_history_trigger, table_name);
+        EXECUTE format('DROP TRIGGER %I ON %s', system_time_period_row.truncate_trigger, table_name);
+    END IF;
 
-    /*
-     * Save ourselves the NOTICE if this table doesn't have SYSTEM
-     * VERSIONING.
-     *
-     * We don't do like above because the purge is different.  We don't want
-     * dropping SYSTEM VERSIONING to drop our infinity constraint; only
-     * dropping the PERIOD should do that.
-     */
-    IF EXISTS (
-        SELECT FROM periods.system_versioning AS sv
-        WHERE (sv.table_name, sv.period_name) = (table_name, period_name))
-    THEN
-        PERFORM periods.drop_system_versioning(table_name, drop_behavior, purge);
+    IF drop_behavior = 'CASCADE' THEN
+        PERFORM periods.drop_foreign_key(table_name, fk.key_name)
+        FROM periods.foreign_keys AS fk
+        WHERE (fk.table_name, fk.period_name) = (table_name, period_name);
+
+        PERFORM periods.drop_unique_key(table_name, uk.key_name, drop_behavior, purge)
+        FROM periods.unique_keys AS uk
+        WHERE (uk.table_name, uk.period_name) = (table_name, period_name);
+
+        /*
+         * Save ourselves the NOTICE if this table doesn't have SYSTEM
+         * VERSIONING.
+         *
+         * We don't do like above because the purge is different.  We don't want
+         * dropping SYSTEM VERSIONING to drop our infinity constraint; only
+         * dropping the PERIOD should do that.
+         */
+        IF EXISTS (
+            SELECT FROM periods.system_versioning AS sv
+            WHERE (sv.table_name, sv.period_name) = (table_name, period_name))
+        THEN
+            PERFORM periods.drop_system_versioning(table_name, drop_behavior, purge);
+        END IF;
     END IF;
 
     /* Remove from catalog */
@@ -574,6 +630,9 @@ $function$;
  * and valid rows were spuriously rejected when different keys' periods
  * overlapped.  Qualify both sides.  The violation errors also now carry
  * SQLSTATE 23503 (foreign_key_violation) like native foreign keys.
+ *
+ * Given a row, the check now tests that one row rather than every row of the
+ * referencing table sharing its key, which made batches quadratic.
  */
 CREATE OR REPLACE FUNCTION periods.validate_foreign_key_new_row(foreign_key_name name, row_data jsonb)
  RETURNS boolean
@@ -583,32 +642,8 @@ $function$
 #variable_conflict use_variable
 DECLARE
     foreign_key_info record;
-    row_clause text DEFAULT 'true';
+    fk_source text;
     violation boolean;
-
-	QSQL CONSTANT text :=
-        'SELECT EXISTS ( '
-        '    SELECT FROM %5$I.%6$I AS fk '
-        '    WHERE NOT EXISTS ( '
-        '        SELECT FROM (SELECT uk.uk_start_value, '
-        '                            uk.uk_end_value, '
-        '                            nullif(lag(uk.uk_end_value) OVER (ORDER BY uk.uk_start_value), uk.uk_start_value) AS x '
-        '                     FROM (SELECT uk.%3$I AS uk_start_value, '
-        '                                  uk.%4$I AS uk_end_value '
-        '                           FROM %1$I.%2$I AS uk '
-        '                           WHERE %9$s '
-        '                             AND uk.%3$I <= fk.%8$I '
-        '                             AND uk.%4$I >= fk.%7$I '
-        '                           FOR KEY SHARE '
-        '                          ) AS uk '
-        '                    ) AS uk '
-        '        WHERE uk.uk_start_value < fk.%8$I '
-        '          AND uk.uk_end_value >= fk.%7$I '
-        '        HAVING min(uk.uk_start_value) <= fk.%7$I '
-        '           AND max(uk.uk_end_value) >= fk.%8$I '
-        '           AND array_agg(uk.x) FILTER (WHERE uk.x IS NOT NULL) IS NULL '
-        '    ) AND %10$s '
-        ')';
 
 BEGIN
     SELECT fc.oid AS fk_table_oid,
@@ -648,19 +683,17 @@ BEGIN
      * Now that we have all of our names, we can see if there are any nulls in
      * the row we were given (if we were given one).
      */
-    IF row_data IS NOT NULL THEN
+    IF row_data IS NULL THEN
+        fk_source := format('%I.%I', foreign_key_info.fk_schema_name, foreign_key_info.fk_table_name);
+    ELSE
         DECLARE
             column_name name;
             has_nulls boolean;
             all_nulls boolean;
-            cols text[] DEFAULT '{}';
-            vals text[] DEFAULT '{}';
         BEGIN
             FOREACH column_name IN ARRAY foreign_key_info.fk_column_names LOOP
                 has_nulls := has_nulls OR row_data->>column_name IS NULL;
                 all_nulls := all_nulls IS NOT false AND row_data->>column_name IS NULL;
-                cols := cols || ('fk.' || quote_ident(column_name));
-                vals := vals || quote_literal(row_data->>column_name);
             END LOOP;
 
             IF all_nulls THEN
@@ -685,23 +718,37 @@ BEGIN
                 END CASE;
             END IF;
 
-            row_clause := format(' (%s) = (%s)', array_to_string(cols, ', '), array_to_string(vals, ', '));
+            /*
+             * Validate only the row we were given.  Its siblings sharing the
+             * key were validated when they were written, and the referenced
+             * side's triggers re-check them whenever it changes; scanning
+             * them again here made a batch of N rows under one key cost
+             * O(N²).  The record carries just the key and period columns;
+             * the rest stay NULL, which keeps column types whose JSON form is
+             * not their input form (hstore) out of the way.
+             */
+            fk_source := format('pg_catalog.jsonb_populate_record(NULL::%I.%I, %L)',
+                foreign_key_info.fk_schema_name,
+                foreign_key_info.fk_table_name,
+                (SELECT jsonb_object_agg(u.column_name, row_data -> u.column_name)
+                 FROM unnest(foreign_key_info.fk_column_names
+                             || foreign_key_info.fk_start_column_name
+                             || foreign_key_info.fk_end_column_name) AS u (column_name)));
         END;
     END IF;
 
-    EXECUTE format(QSQL, foreign_key_info.uk_schema_name,
-                         foreign_key_info.uk_table_name,
-                         foreign_key_info.uk_start_column_name,
-                         foreign_key_info.uk_end_column_name,
-                         foreign_key_info.fk_schema_name,
-                         foreign_key_info.fk_table_name,
-                         foreign_key_info.fk_start_column_name,
-                         foreign_key_info.fk_end_column_name,
-                         (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
-                          FROM unnest(foreign_key_info.uk_column_names,
-                                      foreign_key_info.fk_column_names) AS u (ukc, fkc)
-                         ),
-                         row_clause)
+    EXECUTE format(periods._fk_coverage_sql(),
+                   foreign_key_info.uk_schema_name,
+                   foreign_key_info.uk_table_name,
+                   foreign_key_info.uk_start_column_name,
+                   foreign_key_info.uk_end_column_name,
+                   fk_source,
+                   foreign_key_info.fk_start_column_name,
+                   foreign_key_info.fk_end_column_name,
+                   (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
+                    FROM unnest(foreign_key_info.uk_column_names,
+                                foreign_key_info.fk_column_names) AS u (ukc, fkc)),
+                   'true')
     INTO violation;
 
     IF violation THEN
@@ -723,7 +770,9 @@ $function$;
  * the entire removed parent interval, so children lying strictly inside it
  * were silently orphaned by parent DELETEs and period-shrinking or
  * key-changing UPDATEs (github issue #27).  Re-check the affected children
- * with the same aggregated-coverage logic used on the child side.
+ * with the same aggregated-coverage logic used on the child side — the same
+ * query, from periods._fk_coverage_sql() — restricted to the children whose
+ * period overlaps the old row's.
  */
 CREATE OR REPLACE FUNCTION periods.validate_foreign_key_old_row(foreign_key_name name, row_data jsonb, is_update boolean)
  RETURNS boolean
@@ -734,7 +783,6 @@ $function$
 DECLARE
     foreign_key_info record;
     column_name name;
-    has_nulls boolean;
     uk_column_names text[];
     uk_column_values text[];
     fk_column_names text;
@@ -748,37 +796,6 @@ DECLARE
         '      AND t.%4$I <= %7$L '
         '      AND t.%5$I >= %8$L '
         '%9$s'
-        ')';
-
-    /*
-     * Keep this in sync with QSQL in validate_foreign_key_new_row(); it is the
-     * same aggregated-coverage test, here applied to the children of the
-     * removed or updated referenced row.  No plpgsql BEGIN/EXCEPTION may be
-     * used around it: these checks also run from deferred constraint triggers
-     * during COMMIT, where starting a subtransaction is not allowed.
-     */
-    COVERAGE_SQL CONSTANT text :=
-        'SELECT EXISTS ( '
-        '    SELECT FROM %5$I.%6$I AS fk '
-        '    WHERE NOT EXISTS ( '
-        '        SELECT FROM (SELECT uk.uk_start_value, '
-        '                            uk.uk_end_value, '
-        '                            nullif(lag(uk.uk_end_value) OVER (ORDER BY uk.uk_start_value), uk.uk_start_value) AS x '
-        '                     FROM (SELECT uk.%3$I AS uk_start_value, '
-        '                                  uk.%4$I AS uk_end_value '
-        '                           FROM %1$I.%2$I AS uk '
-        '                           WHERE %9$s '
-        '                             AND uk.%3$I <= fk.%8$I '
-        '                             AND uk.%4$I >= fk.%7$I '
-        '                           FOR KEY SHARE '
-        '                          ) AS uk '
-        '                    ) AS uk '
-        '        WHERE uk.uk_start_value < fk.%8$I '
-        '          AND uk.uk_end_value >= fk.%7$I '
-        '        HAVING min(uk.uk_start_value) <= fk.%7$I '
-        '           AND max(uk.uk_end_value) >= fk.%8$I '
-        '           AND array_agg(uk.x) FILTER (WHERE uk.x IS NOT NULL) IS NULL '
-        '    ) AND %10$s '
         ')';
 
 BEGIN
@@ -863,19 +880,29 @@ BEGIN
     INTO fk_column_names
     FROM unnest(foreign_key_info.fk_column_names) WITH ORDINALITY AS u (c, ordinality);
 
-    EXECUTE format(COVERAGE_SQL,
-                         foreign_key_info.uk_schema_name,
-                         foreign_key_info.uk_table_name,
-                         foreign_key_info.uk_start_column_name,
-                         foreign_key_info.uk_end_column_name,
-                         foreign_key_info.fk_schema_name,
-                         foreign_key_info.fk_table_name,
-                         foreign_key_info.fk_start_column_name,
-                         foreign_key_info.fk_end_column_name,
-                         (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
-                          FROM unnest(foreign_key_info.uk_column_names,
-                                      foreign_key_info.fk_column_names) AS u (ukc, fkc)),
-                         format('(%s) = (%s)', fk_column_names, array_to_string(uk_column_values, ', ')))
+    /*
+     * Only children of this key whose period overlaps the old row's can have
+     * lost coverage: the others were covered by other referenced rows, and
+     * this change cannot take that away.
+     */
+    EXECUTE format(periods._fk_coverage_sql(),
+                   foreign_key_info.uk_schema_name,
+                   foreign_key_info.uk_table_name,
+                   foreign_key_info.uk_start_column_name,
+                   foreign_key_info.uk_end_column_name,
+                   format('%I.%I', foreign_key_info.fk_schema_name, foreign_key_info.fk_table_name),
+                   foreign_key_info.fk_start_column_name,
+                   foreign_key_info.fk_end_column_name,
+                   (SELECT string_agg(format('uk.%I = fk.%I', ukc, fkc), ' AND ')
+                    FROM unnest(foreign_key_info.uk_column_names,
+                                foreign_key_info.fk_column_names) AS u (ukc, fkc)),
+                   format('(%s) = (%s) AND fk.%I < %L AND fk.%I > %L',
+                          fk_column_names,
+                          array_to_string(uk_column_values, ', '),
+                          foreign_key_info.fk_start_column_name,
+                          row_data->>foreign_key_info.uk_end_column_name,
+                          foreign_key_info.fk_end_column_name,
+                          row_data->>foreign_key_info.uk_start_column_name))
     INTO violation;
 
     IF violation THEN
@@ -1219,6 +1246,10 @@ $function$;
  * are already quoted, so realigning onto an owner whose name needs quoting
  * failed with 'role ""The Owner"" does not exist' (issue #14); those sites
  * now emit the regrole text with %s.
+ *
+ * It returns at once for commands that only created objects, and finds the
+ * system-versioning helper functions by name (to_regprocedure) instead of
+ * rendering every pg_proc row as text and comparing.
  */
 CREATE OR REPLACE FUNCTION periods.health_checks()
  RETURNS event_trigger
@@ -1231,8 +1262,12 @@ $function$
 DECLARE
     cmd text;
     r record;
-    save_search_path text;
 BEGIN
+    /* A command that only created objects touched nothing we look after. */
+    IF periods._ddl_only_creates() THEN
+        RETURN;
+    END IF;
+
     /* Make sure that all of our tables are still persistent */
     FOR r IN
         SELECT p.table_name
@@ -1255,22 +1290,19 @@ BEGIN
             r.table_name;
     END LOOP;
 
-    /* Check that our system versioning functions are still here */
-    save_search_path := pg_catalog.current_setting('search_path');
-    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    /*
+     * Check that our system versioning functions are still here.  Their
+     * names are stored schema-qualified, so they resolve under any path.
+     */
     FOR r IN
         SELECT *
         FROM periods.system_versioning AS sv
         CROSS JOIN LATERAL UNNEST(ARRAY[sv.func_as_of, sv.func_between, sv.func_between_symmetric, sv.func_from_to]) AS u (fn)
-        WHERE NOT EXISTS (
-            SELECT FROM pg_catalog.pg_proc AS p
-            WHERE p.oid::regprocedure::text = u.fn
-        )
+        WHERE pg_catalog.to_regprocedure(u.fn) IS NULL
     LOOP
         RAISE EXCEPTION 'cannot drop or rename function "%" because it is used in SYSTEM VERSIONING for table "%"',
             r.fn, r.table_name;
     END LOOP;
-    PERFORM pg_catalog.set_config('search_path', save_search_path, true);
 
     /* Fix up history and for-portion objects ownership */
     FOR cmd IN
@@ -1975,12 +2007,10 @@ DECLARE
 
     start_attnum smallint;
     start_type oid;
-    start_collation oid;
     start_notnull boolean;
 
     end_attnum smallint;
     end_type oid;
-    end_collation oid;
     end_notnull boolean;
 
     excluded_column_name name;
@@ -2180,11 +2210,6 @@ BEGIN
 
             /* Make our own then */
             IF NOT FOUND THEN
-                SELECT c.relname
-                INTO table_name
-                FROM pg_catalog.pg_class AS c
-                WHERE c.oid = table_class;
-
                 bounds_check_constraint := periods._choose_name(ARRAY[table_name, period_name], 'check');
                 alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', bounds_check_constraint, condef);
             END IF;
@@ -2229,11 +2254,6 @@ BEGIN
 
             /* Make our own then */
             IF NOT FOUND THEN
-                SELECT c.relname
-                INTO table_name
-                FROM pg_catalog.pg_class AS c
-                WHERE c.oid = table_class;
-
                 infinity_check_constraint := periods._choose_name(ARRAY[table_name, end_column_name], 'infinity_check');
                 alter_commands := alter_commands || format('ADD CONSTRAINT %I %s', infinity_check_constraint, condef);
             END IF;
@@ -2243,20 +2263,6 @@ BEGIN
     /* If we've created any work for ourselves, do it now */
     IF alter_commands <> '{}' THEN
         EXECUTE format('ALTER TABLE %I.%I %s', schema_name, table_name, array_to_string(alter_commands, ', '));
-
-        IF start_attnum = 0 THEN
-            SELECT a.attnum
-            INTO start_attnum
-            FROM pg_catalog.pg_attribute AS a
-            WHERE (a.attrelid, a.attname) = (table_class, start_column_name);
-        END IF;
-
-        IF end_attnum = 0 THEN
-            SELECT a.attnum
-            INTO end_attnum
-            FROM pg_catalog.pg_attribute AS a
-            WHERE (a.attrelid, a.attname) = (table_class, end_column_name);
-        END IF;
     END IF;
 
     /* Make sure all the excluded columns exist */
@@ -2427,8 +2433,6 @@ DECLARE
     pass integer;
     sql text;
     alter_cmds text[];
-    unique_index regclass;
-    exclude_index regclass;
     unique_sql text;
     exclude_sql text;
 BEGIN
@@ -2616,8 +2620,8 @@ BEGIN
 
     /* If we don't already have a unique_constraint, it must be the one with the highest oid */
     IF unique_constraint IS NULL THEN
-        SELECT c.conname, c.conindid
-        INTO unique_constraint, unique_index
+        SELECT c.conname
+        INTO unique_constraint
         FROM pg_catalog.pg_constraint AS c
         WHERE (c.conrelid, c.contype) = (table_name, 'u')
         ORDER BY oid DESC
@@ -2626,8 +2630,8 @@ BEGIN
 
     /* If we don't already have an exclude_constraint, it must be the one with the highest oid */
     IF exclude_constraint IS NULL THEN
-        SELECT c.conname, c.conindid
-        INTO exclude_constraint, exclude_index
+        SELECT c.conname
+        INTO exclude_constraint
         FROM pg_catalog.pg_constraint AS c
         WHERE (c.conrelid, c.contype) = (table_name, 'x')
         ORDER BY oid DESC
@@ -2649,7 +2653,12 @@ $function$;
  * every DDL command in the database; a few wide period tables made that cost
  * seconds per statement.  A CHECK constraint's conkey lists exactly the
  * columns its expression references, and no other column can appear in its
- * text, so only those are tried now.
+ * text, so only those are tried now — and only for a period whose recorded
+ * column has actually gone missing.  The function also returns at once for
+ * commands that only created objects, writes its catalog updates as plain
+ * UPDATE ... FROM statements instead of formatting one command per match,
+ * and looks for renamed unique, exclusion and infinity constraints among
+ * constraints of the right kind only.
  */
 CREATE OR REPLACE FUNCTION periods.rename_following()
  RETURNS event_trigger
@@ -2661,7 +2670,6 @@ $function$
 #variable_conflict use_variable
 DECLARE
     r record;
-    sql text;
 BEGIN
     /*
      * Anything that is stored by reg* type will auto-adjust, but anything we
@@ -2670,100 +2678,87 @@ BEGIN
      * If we are unable to do something like that, we must raise an exception.
      */
 
+    /* A command that only created objects renamed nothing we track. */
+    IF periods._ddl_only_creates() THEN
+        RETURN;
+    END IF;
+
     ---
     --- periods
     ---
 
     /*
      * Start and end columns of a period can be found by the bounds check
-     * constraint.
+     * constraint.  Only a period whose recorded start or end column no longer
+     * exists can have had one renamed, and only the columns the constraint
+     * references (its conkey) can appear in its deparsed text; both filters
+     * apply before anything is deparsed.
      */
-    FOR sql IN
-        SELECT pg_catalog.format('UPDATE periods.periods SET start_column_name = %L, end_column_name = %L WHERE (table_name, period_name) = (%L::regclass, %L)',
-            sa.attname, ea.attname, p.table_name, p.period_name)
-        FROM periods.periods AS p
-        JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (p.table_name, p.bounds_check_constraint)
-        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name AND sa.attnum = ANY (c.conkey)
-        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name AND ea.attnum = ANY (c.conkey)
-        WHERE (p.start_column_name, p.end_column_name) <> (sa.attname, ea.attname)
-          AND pg_catalog.pg_get_constraintdef(c.oid) = periods._bounds_check_def(p.range_type, sa.attname, ea.attname)
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.periods AS p
+    SET start_column_name = sa.attname,
+        end_column_name = ea.attname
+    FROM pg_catalog.pg_constraint AS c
+    JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = c.conrelid AND sa.attnum = ANY (c.conkey)
+    JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = c.conrelid AND ea.attnum = ANY (c.conkey)
+    WHERE (c.conrelid, c.conname) = (p.table_name, p.bounds_check_constraint)
+      AND ((SELECT a.attnum FROM pg_catalog.pg_attribute AS a WHERE (a.attrelid, a.attname) = (p.table_name, p.start_column_name)) IS NULL
+        OR (SELECT a.attnum FROM pg_catalog.pg_attribute AS a WHERE (a.attrelid, a.attname) = (p.table_name, p.end_column_name)) IS NULL)
+      AND pg_catalog.pg_get_constraintdef(c.oid) = periods._bounds_check_def(p.range_type, sa.attname, ea.attname);
 
     /*
      * Inversely, the bounds check constraint can be retrieved via the start
      * and end columns.
      */
-    FOR sql IN
-        SELECT pg_catalog.format('UPDATE periods.periods SET bounds_check_constraint = %L WHERE (table_name, period_name) = (%L::regclass, %L)',
-            c.conname, p.table_name, p.period_name)
-        FROM periods.periods AS p
-        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name AND c.contype = 'c'
-        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name AND sa.attnum = ANY (c.conkey)
-        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name AND ea.attnum = ANY (c.conkey)
-        WHERE p.bounds_check_constraint <> c.conname
-          AND pg_catalog.pg_get_constraintdef(c.oid) = periods._bounds_check_def(p.range_type, sa.attname, ea.attname)
-          AND (p.start_column_name, p.end_column_name) = (sa.attname, ea.attname)
-          AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (p.table_name, p.bounds_check_constraint))
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.periods AS p
+    SET bounds_check_constraint = c.conname
+    FROM pg_catalog.pg_constraint AS c
+    JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = c.conrelid AND sa.attnum = ANY (c.conkey)
+    JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = c.conrelid AND ea.attnum = ANY (c.conkey)
+    WHERE c.conrelid = p.table_name
+      AND c.contype = 'c'
+      AND c.conname <> p.bounds_check_constraint
+      AND (sa.attname, ea.attname) = (p.start_column_name, p.end_column_name)
+      AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (p.table_name, p.bounds_check_constraint))
+      AND pg_catalog.pg_get_constraintdef(c.oid) = periods._bounds_check_def(p.range_type, sa.attname, ea.attname);
 
     ---
     --- system_time_periods
     ---
 
-    FOR sql IN
-        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET infinity_check_constraint = %L WHERE table_name = %L::regclass',
-            c.conname, p.table_name)
-        FROM periods.periods AS p
-        JOIN periods.system_time_periods AS stp ON (stp.table_name, stp.period_name) = (p.table_name, p.period_name)
-        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name
-        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name
-        WHERE stp.infinity_check_constraint <> c.conname
-          AND pg_catalog.pg_get_constraintdef(c.oid) = format('CHECK ((%I = ''infinity''::%s))', ea.attname, format_type(ea.atttypid, ea.atttypmod))
-          AND p.end_column_name = ea.attname
-          AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (stp.table_name, stp.infinity_check_constraint))
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.system_time_periods AS stp
+    SET infinity_check_constraint = c.conname
+    FROM periods.periods AS p
+    JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name AND c.contype = 'c'
+    JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = c.conrelid AND ea.attnum = ANY (c.conkey)
+    WHERE (p.table_name, p.period_name) = (stp.table_name, stp.period_name)
+      AND c.conname <> stp.infinity_check_constraint
+      AND ea.attname = p.end_column_name
+      AND NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (stp.table_name, stp.infinity_check_constraint))
+      AND pg_catalog.pg_get_constraintdef(c.oid) = format('CHECK ((%I = ''infinity''::%s))', ea.attname, format_type(ea.atttypid, ea.atttypmod));
 
-    FOR sql IN
-        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET generated_always_trigger = %L WHERE table_name = %L::regclass',
-            t.tgname, stp.table_name)
-        FROM periods.system_time_periods AS stp
-        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = stp.table_name
-        WHERE t.tgname <> stp.generated_always_trigger
-          AND t.tgfoid = 'periods.generated_always_as_row_start_end()'::regprocedure
-          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.generated_always_trigger))
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.system_time_periods AS stp
+    SET generated_always_trigger = t.tgname
+    FROM pg_catalog.pg_trigger AS t
+    WHERE t.tgrelid = stp.table_name
+      AND t.tgname <> stp.generated_always_trigger
+      AND t.tgfoid = 'periods.generated_always_as_row_start_end()'::regprocedure
+      AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.generated_always_trigger));
 
-    FOR sql IN
-        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET write_history_trigger = %L WHERE table_name = %L::regclass',
-            t.tgname, stp.table_name)
-        FROM periods.system_time_periods AS stp
-        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = stp.table_name
-        WHERE t.tgname <> stp.write_history_trigger
-          AND t.tgfoid = 'periods.write_history()'::regprocedure
-          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.write_history_trigger))
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.system_time_periods AS stp
+    SET write_history_trigger = t.tgname
+    FROM pg_catalog.pg_trigger AS t
+    WHERE t.tgrelid = stp.table_name
+      AND t.tgname <> stp.write_history_trigger
+      AND t.tgfoid = 'periods.write_history()'::regprocedure
+      AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.write_history_trigger));
 
-    FOR sql IN
-        SELECT pg_catalog.format('UPDATE periods.system_time_periods SET truncate_trigger = %L WHERE table_name = %L::regclass',
-            t.tgname, stp.table_name)
-        FROM periods.system_time_periods AS stp
-        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = stp.table_name
-        WHERE t.tgname <> stp.truncate_trigger
-          AND t.tgfoid = 'periods.truncate_system_versioning()'::regprocedure
-          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.truncate_trigger))
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.system_time_periods AS stp
+    SET truncate_trigger = t.tgname
+    FROM pg_catalog.pg_trigger AS t
+    WHERE t.tgrelid = stp.table_name
+      AND t.tgname <> stp.truncate_trigger
+      AND t.tgfoid = 'periods.truncate_system_versioning()'::regprocedure
+      AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (stp.table_name, stp.truncate_trigger));
 
     /*
      * We can't reliably find out what a column was renamed to, so just error
@@ -2785,70 +2780,63 @@ BEGIN
     --- for_portion_views
     ---
 
-    FOR sql IN
-        SELECT pg_catalog.format('UPDATE periods.for_portion_views SET trigger_name = %L WHERE (table_name, period_name) = (%L::regclass, %L)',
-            t.tgname, fpv.table_name, fpv.period_name)
-        FROM periods.for_portion_views AS fpv
-        JOIN pg_catalog.pg_trigger AS t ON t.tgrelid = fpv.view_name
-        WHERE t.tgname <> fpv.trigger_name
-          AND t.tgfoid = 'periods.update_portion_of()'::regprocedure
-          AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (fpv.table_name, fpv.trigger_name))
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.for_portion_views AS fpv
+    SET trigger_name = t.tgname
+    FROM pg_catalog.pg_trigger AS t
+    WHERE t.tgrelid = fpv.view_name
+      AND t.tgname <> fpv.trigger_name
+      AND t.tgfoid = 'periods.update_portion_of()'::regprocedure
+      AND NOT EXISTS (SELECT FROM pg_catalog.pg_trigger AS _t WHERE (_t.tgrelid, _t.tgname) = (fpv.view_name, fpv.trigger_name));
 
     ---
     --- unique_keys
     ---
 
-    FOR sql IN
-        SELECT format('UPDATE periods.unique_keys SET column_names = %L WHERE key_name = %L',
-            a.column_names, uk.key_name)
-        FROM periods.unique_keys AS uk
-        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
-        JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (uk.table_name, uk.unique_constraint)
-        JOIN LATERAL (
-            SELECT array_agg(a.attname ORDER BY u.ordinality) AS column_names
-            FROM unnest(c.conkey) WITH ORDINALITY AS u (attnum, ordinality)
-            JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attnum) = (uk.table_name, u.attnum)
-            WHERE a.attname NOT IN (p.start_column_name, p.end_column_name)
-            ) AS a ON true
-        WHERE uk.column_names <> a.column_names
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+    UPDATE periods.unique_keys AS uk
+    SET column_names = a.column_names
+    FROM periods.periods AS p
+    JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name AND c.contype = 'u'
+    CROSS JOIN LATERAL (
+        SELECT array_agg(a.attname ORDER BY u.ordinality) AS column_names
+        FROM unnest(c.conkey) WITH ORDINALITY AS u (attnum, ordinality)
+        JOIN pg_catalog.pg_attribute AS a ON (a.attrelid, a.attnum) = (c.conrelid, u.attnum)
+        WHERE a.attname NOT IN (p.start_column_name, p.end_column_name)
+        ) AS a
+    WHERE (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
+      AND c.conname = uk.unique_constraint
+      AND uk.column_names <> a.column_names;
 
-    FOR sql IN
-        SELECT format('UPDATE periods.unique_keys SET unique_constraint = %L WHERE key_name = %L',
-            c.conname, uk.key_name)
-        FROM periods.unique_keys AS uk
-        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
-        CROSS JOIN LATERAL unnest(uk.column_names || ARRAY[p.start_column_name, p.end_column_name]) WITH ORDINALITY AS u (column_name, ordinality)
-        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = uk.table_name
-        WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (uk.table_name, uk.unique_constraint))
-        GROUP BY uk.key_name, c.oid, c.conname
+    UPDATE periods.unique_keys AS uk
+    SET unique_constraint = m.conname
+    FROM (
+        SELECT k.key_name, c.conname
+        FROM periods.unique_keys AS k
+        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (k.table_name, k.period_name)
+        CROSS JOIN LATERAL unnest(k.column_names || ARRAY[p.start_column_name, p.end_column_name]) WITH ORDINALITY AS u (column_name, ordinality)
+        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = k.table_name AND c.contype = 'u'
+        WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (k.table_name, k.unique_constraint))
+        GROUP BY k.key_name, c.oid, c.conname
         HAVING format('UNIQUE (%s)', string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)) = pg_catalog.pg_get_constraintdef(c.oid)
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+        ) AS m
+    WHERE m.key_name = uk.key_name;
 
-    FOR sql IN
-        SELECT format('UPDATE periods.unique_keys SET exclude_constraint = %L WHERE key_name = %L',
-            c.conname, uk.key_name)
-        FROM periods.unique_keys AS uk
-        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (uk.table_name, uk.period_name)
-        CROSS JOIN LATERAL unnest(uk.column_names) WITH ORDINALITY AS u (column_name, ordinality)
-        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = uk.table_name
-        WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (uk.table_name, uk.exclude_constraint))
-        GROUP BY uk.key_name, c.oid, c.conname, p.range_type, p.start_column_name, p.end_column_name
+    UPDATE periods.unique_keys AS uk
+    SET exclude_constraint = m.conname
+    FROM (
+        SELECT k.key_name, c.conname
+        FROM periods.unique_keys AS k
+        JOIN periods.periods AS p ON (p.table_name, p.period_name) = (k.table_name, k.period_name)
+        CROSS JOIN LATERAL unnest(k.column_names) WITH ORDINALITY AS u (column_name, ordinality)
+        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = k.table_name AND c.contype = 'x'
+        WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_constraint AS _c WHERE (_c.conrelid, _c.conname) = (k.table_name, k.exclude_constraint))
+        GROUP BY k.key_name, c.oid, c.conname, p.range_type, p.start_column_name, p.end_column_name
         HAVING format('EXCLUDE USING gist (%s, %s(%I, %I, ''[)''::text) WITH &&)',
                       string_agg(quote_ident(u.column_name) || ' WITH =', ', ' ORDER BY u.ordinality),
                       p.range_type,
                       p.start_column_name,
                       p.end_column_name) = pg_catalog.pg_get_constraintdef(c.oid)
-    LOOP
-        EXECUTE sql;
-    END LOOP;
+        ) AS m
+    WHERE m.key_name = uk.key_name;
 
     ---
     --- foreign_keys
@@ -3006,7 +2994,9 @@ DECLARE
     upd_action text DEFAULT '';
     del_action text DEFAULT '';
     foreign_columns text;
+    foreign_columns_changed text;
     unique_columns text;
+    unique_columns_changed text;
 BEGIN
     IF table_name IS NULL THEN
         RAISE EXCEPTION 'no table name specified';
@@ -3120,11 +3110,6 @@ BEGIN
         RAISE EXCEPTION 'column types do not match';
     END IF;
 
-    /* The range types must match, too */
-    IF period_row.range_type <> ref_period_row.range_type THEN
-        RAISE EXCEPTION 'period types do not match';
-    END IF;
-
     /*
      * Generate a name for the foreign constraint.  We don't have to worry about
      * concurrency here because all period ddl commands lock the periods table.
@@ -3153,12 +3138,24 @@ BEGIN
     END IF;
 
     /* Get the columns that require checking the constraint */
-    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
-    INTO foreign_columns
+    /*
+     * The update triggers fire on UPDATE OF the key and period columns, which
+     * is any UPDATE that merely names them; the WHEN condition skips the
+     * check when their values did not change, which is what ORM-style
+     * whole-row updates do.
+     */
+    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality),
+           format('(%s) IS DISTINCT FROM (%s)',
+                  string_agg('OLD.' || quote_ident(u.column_name), ', ' ORDER BY u.ordinality),
+                  string_agg('NEW.' || quote_ident(u.column_name), ', ' ORDER BY u.ordinality))
+    INTO foreign_columns, foreign_columns_changed
     FROM unnest(column_names || period_row.start_column_name || period_row.end_column_name) WITH ORDINALITY AS u (column_name, ordinality);
 
-    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality)
-    INTO unique_columns
+    SELECT string_agg(quote_ident(u.column_name), ', ' ORDER BY u.ordinality),
+           format('(%s) IS DISTINCT FROM (%s)',
+                  string_agg('OLD.' || quote_ident(u.column_name), ', ' ORDER BY u.ordinality),
+                  string_agg('NEW.' || quote_ident(u.column_name), ', ' ORDER BY u.ordinality))
+    INTO unique_columns, unique_columns_changed
     FROM unnest(unique_row.column_names || ref_period_row.start_column_name || ref_period_row.end_column_name) WITH ORDINALITY AS u (column_name, ordinality);
 
     /*
@@ -3181,11 +3178,11 @@ BEGIN
     EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER INSERT ON %s FROM %s DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE PROCEDURE periods.fk_insert_check(%L)',
         fk_insert_trigger, table_name, unique_row.table_name, key_name);
     fk_update_trigger := coalesce(fk_update_trigger, periods._choose_name(ARRAY[key_name], 'fk_update'));
-    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE PROCEDURE periods.fk_update_check(%L)',
-        fk_update_trigger, foreign_columns, table_name, unique_row.table_name, key_name);
+    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (%s) EXECUTE PROCEDURE periods.fk_update_check(%L)',
+        fk_update_trigger, foreign_columns, table_name, unique_row.table_name, foreign_columns_changed, key_name);
     uk_update_trigger := coalesce(uk_update_trigger, periods._choose_name(ARRAY[key_name], 'uk_update'));
-    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s%s FOR EACH ROW EXECUTE PROCEDURE periods.uk_update_check(%L)',
-        uk_update_trigger, unique_columns, unique_row.table_name, table_name, upd_action, key_name);
+    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER UPDATE OF %s ON %s FROM %s%s FOR EACH ROW WHEN (%s) EXECUTE PROCEDURE periods.uk_update_check(%L)',
+        uk_update_trigger, unique_columns, unique_row.table_name, table_name, upd_action, unique_columns_changed, key_name);
     uk_delete_trigger := coalesce(uk_delete_trigger, periods._choose_name(ARRAY[key_name], 'uk_delete'));
     EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER DELETE ON %s FROM %s%s FOR EACH ROW EXECUTE PROCEDURE periods.uk_delete_check(%L)',
         uk_delete_trigger, unique_row.table_name, table_name, del_action, key_name);

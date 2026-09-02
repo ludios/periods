@@ -234,18 +234,18 @@ INSERT INTO fk_child VALUES (1, 1, 30, 40);
 /* Deleting or shrinking the parent across the child must be blocked. */
 DELETE FROM fk_parent WHERE id = 1;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 UPDATE fk_parent SET s = 35 WHERE id = 1;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
 PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
 /* Changing the key while a child references it must be blocked. */
 UPDATE fk_parent SET id = 2 WHERE id = 1;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
 PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
 /* Changes that keep the child covered are allowed. */
@@ -279,7 +279,7 @@ BEGIN;
 DELETE FROM fk_parent WHERE (id, s) = (1, 35);
 COMMIT;
 ERROR:  update or delete on table "fk_parent" violates foreign key constraint "fk_child_parent_id_p" on table "fk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 SELECT id, s, e FROM fk_parent ORDER BY id, s;
@@ -324,7 +324,7 @@ INSERT INTO fkr_parent VALUES (1, 0, 100);
 INSERT INTO fkr_child VALUES (1, 1, 30, 40);
 DELETE FROM fkr_parent WHERE id = 1;
 ERROR:  update or delete on table "fkr_parent" violates foreign key constraint "fkr_child_parent_id_p" on table "fkr_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 /* Extending the parent period keeps the child covered and is allowed. */
@@ -360,7 +360,7 @@ INSERT INTO fk_selfref VALUES (2, 1, 10, 20);
 /* id 1 is still referenced by id 2. */
 DELETE FROM fk_selfref WHERE id = 1;
 ERROR:  update or delete on table "fk_selfref" violates foreign key constraint "fk_selfref_mgr_p" on table "fk_selfref"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
 PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
 /* id 2 is referenced by nobody. */
@@ -408,7 +408,7 @@ INSERT INTO sn_parent VALUES (1, 0, 20);
 /* A child with a key that has no parent at all must be rejected. */
 INSERT INTO sn_child VALUES (999, 5, 10);
 ERROR:  insert or update on table "sn_child" violates foreign key constraint "sn_child_id_p"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 130 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 118 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
 PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 /* A properly covered child is accepted. */
@@ -606,7 +606,7 @@ SELECT periods.add_period('nn', 'p', 's', 'e');
 
 ALTER TABLE nn ALTER COLUMN s DROP NOT NULL;
 ERROR:  cannot drop NOT NULL from column "s" of table "public.nn" because it is part of the period "p"
-CONTEXT:  PL/pgSQL function periods.health_checks() line 320 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 321 at RAISE
 INSERT INTO nn VALUES (1, NULL, 10);
 ERROR:  null value in column "s" of relation "nn" violates not-null constraint
 DETAIL:  Failing row contains (1, null, 10).
@@ -1051,7 +1051,7 @@ SELECT periods.add_unique_key('t3_self', '{sys_s}', 'validity', key_name => 't3_
 
 SELECT periods.add_system_time_period('t3_self', 'sys_s', 'sys_e');
 ERROR:  columns in period for SYSTEM_TIME are not allowed in UNIQUE keys
-CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 48 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 46 at RAISE
 SELECT periods.drop_unique_key('t3_self', 't3_self_uk');
  drop_unique_key 
 -----------------
@@ -1077,7 +1077,7 @@ DROP TABLE t3_other;
 CREATE TABLE t2_excl (id integer PRIMARY KEY, val text);
 SELECT periods.add_system_time_period('t2_excl', excluded_column_names => '{system_time_start}');
 ERROR:  cannot exclude period column "system_time_start"
-CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 326 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 300 at RAISE
 SELECT periods.add_system_time_period('t2_excl');
  add_system_time_period 
 ------------------------
@@ -1483,7 +1483,7 @@ SELECT periods.add_period('fkb_fk', 'validity', 'vf', 'vt');
 /* MATCH PARTIAL: unimplemented, must not be accepted at DDL time */
 SELECT periods.add_foreign_key('fkb_fk', '{uid,uid2}', 'validity', 'fkb_uk2', match_type => 'PARTIAL', key_name => 'fkb_partial');
 ERROR:  MATCH PARTIAL is not implemented
-CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 28 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 30 at RAISE
 INSERT INTO fkb_uk VALUES (1, 1, 0, 100);
 INSERT INTO fkb_fk VALUES (1, NULL, 10, 20);
 DELETE FROM fkb_fk;
@@ -1496,10 +1496,10 @@ SELECT periods.drop_foreign_key('fkb_fk', 'fkb_partial');
 /* Unsupported referential actions must be rejected up front */
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', delete_action => 'CASCADE');
 ERROR:  delete_action CASCADE is not implemented
-CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 37 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 39 at RAISE
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => 'SET NULL');
 ERROR:  update_action SET NULL is not implemented
-CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 34 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 36 at RAISE
 /* Column-count mismatches in both directions, multidimensional, and empty.
  * (terse: the verbose CONTEXT here is version-dependent wording) */
 \set VERBOSITY terse
@@ -1515,10 +1515,10 @@ ERROR:  no referencing columns specified
 /* Explicit NULL parameters must not reach the catalog inserts */
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', match_type => NULL);
 ERROR:  no match type specified
-CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 25 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 27 at RAISE
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => NULL);
 ERROR:  no referential action specified
-CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 31 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 33 at RAISE
 /* The supported shape keeps working and enforcing */
 SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_action => 'RESTRICT', delete_action => 'RESTRICT', key_name => 'fkb_ok');
  add_foreign_key 
@@ -1529,7 +1529,7 @@ SELECT periods.add_foreign_key('fkb_fk', '{uid}', 'validity', 'fkb_uk1', update_
 INSERT INTO fkb_fk VALUES (1, NULL, 10, 20);
 INSERT INTO fkb_fk VALUES (99, NULL, 10, 20);
 ERROR:  insert or update on table "fkb_fk" violates foreign key constraint "fkb_ok"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 130 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 118 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
 PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
 DELETE FROM fkb_fk;
@@ -1915,7 +1915,7 @@ ERROR:  must be owner of table b33.vt
 CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
 SQL function "_serialize" statement 2
 SQL statement "SELECT periods._serialize(table_class)"
-PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 34 at PERFORM
+PL/pgSQL function periods.add_system_time_period(regclass,name,name,name,name,name,name,name,name[]) line 32 at PERFORM
 SELECT periods.set_system_time_period_excluded_columns('b33.vt', ARRAY['val']);
 ERROR:  must be owner of table b33.vt
 CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
@@ -1939,7 +1939,7 @@ ERROR:  must be owner of table b33.vt
 CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
 SQL function "_serialize" statement 2
 SQL statement "SELECT periods._serialize(table_name)"
-PL/pgSQL function periods.add_unique_key(regclass,name[],name,name,name,name) line 22 at PERFORM
+PL/pgSQL function periods.add_unique_key(regclass,name[],name,name,name,name) line 20 at PERFORM
 SELECT periods.drop_unique_key('b33.vt', 'b33_stolen_k');
 ERROR:  must be owner of table b33.vt
 CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
@@ -1963,14 +1963,14 @@ ERROR:  must be owner of table b33.vt
 CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
 SQL function "_serialize" statement 2
 SQL statement "SELECT periods._serialize(table_name)"
-PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 19 at PERFORM
+PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 17 at PERFORM
 SQL function "drop_system_time_period" statement 1
 SELECT periods.drop_period('b33.vt', 'q');
 ERROR:  must be owner of table b33.vt
 CONTEXT:  PL/pgSQL function periods._require_table_owner(regclass) line 13 at RAISE
 SQL function "_serialize" statement 2
 SQL statement "SELECT periods._serialize(table_name)"
-PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 19 at PERFORM
+PL/pgSQL function periods.drop_period(regclass,name,periods.drop_behavior,boolean) line 17 at PERFORM
 /* A foreign key puts triggers on the *referenced* table, which is the victim's. */
 CREATE TABLE b33a.at (id integer, s date NOT NULL, e date NOT NULL);
 SELECT periods.add_period('b33a.at', 'p', 's', 'e');
@@ -1981,7 +1981,7 @@ SELECT periods.add_period('b33a.at', 'p', 's', 'e');
 
 SELECT periods.add_foreign_key('b33a.at', ARRAY['id'], 'p', 'b33_vt_k', key_name => 'b33_fk');
 ERROR:  permission denied for table b33.vt
-CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 179 at RAISE
+CONTEXT:  PL/pgSQL function periods.add_foreign_key(regclass,name[],name,name,periods.fk_match_types,periods.fk_actions,periods.fk_actions,name,name,name,name,name) line 188 at RAISE
 /* add_system_versioning() adopts a matching history table and reassigns its owner. */
 CREATE TABLE b33a.base (id integer PRIMARY KEY, val text);
 SELECT periods.add_system_time_period('b33a.base');
@@ -2415,7 +2415,7 @@ SELECT id, val, s, e FROM fp_uk ORDER BY s;
 /* Re-keying the middle slice leaves the child uncovered on [20,30). */
 UPDATE fp_uk__for_portion_of_p SET id = 2, s = 20, e = 30 WHERE id = 1;
 ERROR:  update or delete on table "fp_uk" violates foreign key constraint "fp_uk_child_parent_id_p" on table "fp_uk_child"
-CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
 SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
 PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
 SELECT id, val, s, e FROM fp_uk ORDER BY s;
@@ -2440,3 +2440,103 @@ SELECT periods.drop_period('fp_uk', 'p', 'CASCADE');
 (1 row)
 
 DROP TABLE fp_uk;
+/*
+ * Temporal foreign key checks after the performance pass: the child-side
+ * check validates only the row being written (a batch of N rows under one
+ * key used to re-validate all N siblings for each of them), the parent-side
+ * check considers only children overlapping the old period, and the update
+ * triggers skip updates that leave the key and period alone.  Every
+ * violation they exist for must still be caught.
+ */
+CREATE TABLE fkq_parent (id integer, s integer, e integer);
+SELECT periods.add_period('fkq_parent', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('fkq_parent', ARRAY['id'], 'p', key_name => 'fkq_parent_id_p');
+ add_unique_key  
+-----------------
+ fkq_parent_id_p
+(1 row)
+
+CREATE TABLE fkq_child (id integer, parent_id integer, s integer, e integer);
+SELECT periods.add_period('fkq_child', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_foreign_key('fkq_child', ARRAY['parent_id'], 'p', 'fkq_parent_id_p', key_name => 'fkq_child_parent_id_p');
+    add_foreign_key    
+-----------------------
+ fkq_child_parent_id_p
+(1 row)
+
+INSERT INTO fkq_parent VALUES (1, 0, 50), (1, 50, 100);
+/* A batch of siblings under one key with one of them uncovered is rejected whole. */
+INSERT INTO fkq_child
+    SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g
+    UNION ALL SELECT 21, 1, 99, 101;
+ERROR:  insert or update on table "fkq_child" violates foreign key constraint "fkq_child_parent_id_p"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_new_row(name,jsonb) line 118 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_new_row(TG_ARGV[0], jnew)"
+PL/pgSQL function periods.fk_insert_check() line 20 at PERFORM
+INSERT INTO fkq_child SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g;
+SELECT count(*) AS children FROM fkq_child;
+ children 
+----------
+       20
+(1 row)
+
+/* The update triggers carry a WHEN condition; the others do not. */
+SELECT t.tgname, t.tgqual IS NOT NULL AS has_when
+FROM pg_catalog.pg_trigger AS t
+WHERE t.tgrelid IN ('fkq_parent'::regclass, 'fkq_child'::regclass) AND NOT t.tgisinternal
+ORDER BY t.tgname;
+             tgname              | has_when 
+---------------------------------+----------
+ fkq_child_parent_id_p_fk_insert | f
+ fkq_child_parent_id_p_fk_update | t
+ fkq_child_parent_id_p_uk_delete | f
+ fkq_child_parent_id_p_uk_update | t
+(4 rows)
+
+UPDATE fkq_child SET parent_id = parent_id;
+UPDATE fkq_parent SET id = id;
+/* A parent segment can go once no child overlaps it. */
+INSERT INTO fkq_child VALUES (30, 1, 60, 70);
+DELETE FROM fkq_parent WHERE (id, s) = (1, 50);
+ERROR:  update or delete on table "fkq_parent" violates foreign key constraint "fkq_child_parent_id_p" on table "fkq_child"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, false)"
+PL/pgSQL function periods.uk_delete_check() line 22 at PERFORM
+DELETE FROM fkq_child WHERE id = 30;
+DELETE FROM fkq_parent WHERE (id, s) = (1, 50);
+SELECT id, s, e FROM fkq_parent ORDER BY s;
+ id | s | e  
+----+---+----
+  1 | 0 | 50
+(1 row)
+
+/* And re-keying the remaining segment orphans the batch. */
+UPDATE fkq_parent SET id = 2;
+ERROR:  update or delete on table "fkq_parent" violates foreign key constraint "fkq_child_parent_id_p" on table "fkq_child"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 129 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
+PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
+SELECT periods.drop_period('fkq_child', 'p', 'CASCADE');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fkq_child;
+SELECT periods.drop_period('fkq_parent', 'p', 'CASCADE');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fkq_parent;

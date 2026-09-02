@@ -62,7 +62,7 @@ TABLE periods.system_time_periods;
 
 ALTER TABLE rename_test RENAME col3 TO "COLUMN3";
 ERROR:  cannot drop or rename column "col3" on table "public.rename_test" because it is excluded from SYSTEM VERSIONING
-CONTEXT:  PL/pgSQL function periods.rename_following() line 121 at RAISE
+CONTEXT:  PL/pgSQL function periods.rename_following() line 107 at RAISE
 ALTER TABLE rename_test RENAME CONSTRAINT rename_test_system_time_end_infinity_check TO inf_check;
 ALTER TRIGGER rename_test_system_time_generated_always ON rename_test RENAME TO generated_always;
 ALTER TRIGGER rename_test_system_time_write_history ON rename_test RENAME TO write_history;
@@ -145,19 +145,19 @@ TABLE periods.foreign_keys;
 
 ALTER TABLE rename_test_ref RENAME COLUMN "COLUMN1" TO col1; -- fails
 ERROR:  cannot drop or rename column "COLUMN1" on table "public.rename_test_ref" because it is used in period foreign key "rename_test_ref_col2_COLUMN1_col3_q"
-CONTEXT:  PL/pgSQL function periods.rename_following() line 210 at RAISE
+CONTEXT:  PL/pgSQL function periods.rename_following() line 189 at RAISE
 ALTER TRIGGER "rename_test_ref_col2_COLUMN1_col3_q_fk_insert" ON rename_test_ref RENAME TO fk_insert;
 ERROR:  cannot drop or rename trigger "rename_test_ref_col2_COLUMN1_col3_q_fk_insert" on table "public.rename_test_ref" because it is used in period foreign key "rename_test_ref_col2_COLUMN1_col3_q"
-CONTEXT:  PL/pgSQL function periods.rename_following() line 245 at RAISE
+CONTEXT:  PL/pgSQL function periods.rename_following() line 224 at RAISE
 ALTER TRIGGER "rename_test_ref_col2_COLUMN1_col3_q_fk_update" ON rename_test_ref RENAME TO fk_update;
 ERROR:  cannot drop or rename trigger "rename_test_ref_col2_COLUMN1_col3_q_fk_update" on table "public.rename_test_ref" because it is used in period foreign key "rename_test_ref_col2_COLUMN1_col3_q"
-CONTEXT:  PL/pgSQL function periods.rename_following() line 245 at RAISE
+CONTEXT:  PL/pgSQL function periods.rename_following() line 224 at RAISE
 ALTER TRIGGER "rename_test_ref_col2_COLUMN1_col3_q_uk_update" ON rename_test RENAME TO uk_update;
 ERROR:  cannot drop or rename trigger "rename_test_ref_col2_COLUMN1_col3_q_uk_update" on table "public.rename_test" because it is used in period foreign key "rename_test_ref_col2_COLUMN1_col3_q"
-CONTEXT:  PL/pgSQL function periods.rename_following() line 245 at RAISE
+CONTEXT:  PL/pgSQL function periods.rename_following() line 224 at RAISE
 ALTER TRIGGER "rename_test_ref_col2_COLUMN1_col3_q_uk_delete" ON rename_test RENAME TO uk_delete;
 ERROR:  cannot drop or rename trigger "rename_test_ref_col2_COLUMN1_col3_q_uk_delete" on table "public.rename_test" because it is used in period foreign key "rename_test_ref_col2_COLUMN1_col3_q"
-CONTEXT:  PL/pgSQL function periods.rename_following() line 245 at RAISE
+CONTEXT:  PL/pgSQL function periods.rename_following() line 224 at RAISE
 TABLE periods.foreign_keys;
               key_name               |   table_name    |    column_names     | period_name |          unique_key          | match_type | delete_action | update_action |               fk_insert_trigger               |               fk_update_trigger               |               uk_update_trigger               |               uk_delete_trigger               
 -------------------------------------+-----------------+---------------------+-------------+------------------------------+------------+---------------+---------------+-----------------------------------------------+-----------------------------------------------+-----------------------------------------------+-----------------------------------------------
@@ -175,16 +175,16 @@ NOTICE:  history table "public.rename_test_history" created for "public.rename_t
 
 ALTER FUNCTION rename_test__as_of(timestamp with time zone) RENAME TO bumble_bee;
 ERROR:  cannot drop or rename function "public.rename_test__as_of(timestamp with time zone)" because it is used in SYSTEM VERSIONING for table "public.rename_test"
-CONTEXT:  PL/pgSQL function periods.health_checks() line 42 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 44 at RAISE
 ALTER FUNCTION rename_test__between(timestamp with time zone, timestamp with time zone) RENAME TO bumble_bee;
 ERROR:  cannot drop or rename function "public.rename_test__between(timestamp with time zone,timestamp with time zone)" because it is used in SYSTEM VERSIONING for table "public.rename_test"
-CONTEXT:  PL/pgSQL function periods.health_checks() line 42 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 44 at RAISE
 ALTER FUNCTION rename_test__between_symmetric(timestamp with time zone, timestamp with time zone) RENAME TO bumble_bee;
 ERROR:  cannot drop or rename function "public.rename_test__between_symmetric(timestamp with time zone,timestamp with time zone)" because it is used in SYSTEM VERSIONING for table "public.rename_test"
-CONTEXT:  PL/pgSQL function periods.health_checks() line 42 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 44 at RAISE
 ALTER FUNCTION rename_test__from_to(timestamp with time zone, timestamp with time zone) RENAME TO bumble_bee;
 ERROR:  cannot drop or rename function "public.rename_test__from_to(timestamp with time zone,timestamp with time zone)" because it is used in SYSTEM VERSIONING for table "public.rename_test"
-CONTEXT:  PL/pgSQL function periods.health_checks() line 42 at RAISE
+CONTEXT:  PL/pgSQL function periods.health_checks() line 44 at RAISE
 SELECT periods.drop_system_versioning('rename_test', purge => true);
  drop_system_versioning 
 ------------------------
