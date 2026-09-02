@@ -87,21 +87,12 @@ UPDATE pc_leak SET val = 5;
 /*
  * Count this backend's cached history INSERT plans: one per UPDATE when
  * leaking, exactly one when behaving.  pg_backend_memory_contexts needs a
- * superuser and PostgreSQL 14; on older servers just report the good value.
+ * superuser.
  */
 RESET ROLE;
-DO $do$
-DECLARE
-    n bigint := 1;
-BEGIN
-    IF current_setting('server_version_num')::integer >= 140000 THEN
-        SELECT count(*) INTO n
-        FROM pg_backend_memory_contexts
-        WHERE ident LIKE 'INSERT INTO %pc_leak_history%';
-    END IF;
-    RAISE NOTICE 'cached history insert plans: %', n;
-END;
-$do$;
+SELECT count(*) AS cached_history_insert_plans
+FROM pg_backend_memory_contexts
+WHERE ident LIKE 'INSERT INTO %pc_leak_history%';
 
 /* Changing both schema and name of the history table must cause a re-plan. */
 CREATE SCHEMA pc_leak_hs;
