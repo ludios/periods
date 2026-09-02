@@ -661,7 +661,9 @@ write_history(PG_FUNCTION_ARGS)
 
 		/* If only excluded columns have changed, don't write history. */
 		if (OnlyExcludedColumnsChanged(rel, old_row, new_row))
+		{
 			return PointerGetDatum(NULL);
+		}
 	}
 	else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 	{
