@@ -12,8 +12,8 @@ cross-checked by hand and (for the FK bug) by `codex`.
 
 ## Status (2026-08-30)
 
-Fixes ship as extension version **7.0.0** (`periods--1.2--7.0.0.sql`; a full install script is
-generated at build time). Every fix has a regression test in the new `bugfixes` suite, committed
+Fixes ship as extension version **7.0.0** (`periods--1.2--7.0.0.sql`, applied on top of the 1.2
+script; there is no full 7.0.0 install script). Every fix has a regression test in the new `bugfixes` suite, committed
 first with the buggy behavior captured, then flipped by the fix commit. All work verified on
 PostgreSQL 17.11 and 18.6.
 

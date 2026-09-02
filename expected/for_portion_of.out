@@ -91,10 +91,10 @@ UPDATE pricing__for_portion_of_quantities SET min_quantity = 5, max_quantity = 1
 TABLE pricing ORDER BY min_quantity;
  id1 | id2 | id3 | id4 | product | min_quantity | max_quantity | price 
 -----+-----+-----+-----+---------+--------------+--------------+-------
-   3 |   3 |   3 |   6 | Trinket |            1 |            5 |   100
+   4 |   4 |   4 |   8 | Trinket |            1 |            5 |   100
    2 |   2 |   2 |   4 | Trinket |            5 |           10 |    90
    1 |   1 |   1 |   2 | Trinket |           10 |           15 |    90
-   4 |   4 |   4 |   8 | Trinket |           15 |           20 |    80
+   3 |   3 |   3 |   6 | Trinket |           15 |           20 |    80
 (4 rows)
 
 -- If we drop the period (without CASCADE) then the FOR PORTION views should be

@@ -1159,3 +1159,32 @@ SELECT p.bounds_check_constraint FROM periods.periods AS p WHERE p.table_name = 
 SELECT periods.drop_period('bc_pat', 'p');
 DROP TABLE bc_pat;
 DROP TYPE bugfix_patternrange;
+
+/*
+ * FOR PORTION OF on a table with a temporal unique key — the standard's own
+ * use case — never worked: the slices were inserted before the edited row was
+ * shrunk to the portion, so the first slice overlapped the row and the unique
+ * key's exclusion constraint, which is not deferrable, rejected it.  The row
+ * is shrunk first now.  A child referencing the key sees only the final state
+ * (its check is deferred), and a key change inside the portion that uncovers
+ * it is still caught.
+ */
+
+CREATE TABLE fp_uk (id integer, val text, s integer, e integer, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_uk', 'p', 's', 'e');
+SELECT periods.add_unique_key('fp_uk', ARRAY['id'], 'p', key_name => 'fp_uk_id_p');
+SELECT periods.add_for_portion_view('fp_uk', 'p');
+CREATE TABLE fp_uk_child (id integer, parent_id integer, s integer, e integer);
+SELECT periods.add_period('fp_uk_child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('fp_uk_child', ARRAY['parent_id'], 'p', 'fp_uk_id_p', key_name => 'fp_uk_child_parent_id_p');
+INSERT INTO fp_uk VALUES (1, 'a', 10, 40);
+INSERT INTO fp_uk_child VALUES (1, 1, 15, 35);
+UPDATE fp_uk__for_portion_of_p SET val = 'b', s = 20, e = 30;
+SELECT id, val, s, e FROM fp_uk ORDER BY s;
+/* Re-keying the middle slice leaves the child uncovered on [20,30). */
+UPDATE fp_uk__for_portion_of_p SET id = 2, s = 20, e = 30 WHERE id = 1;
+SELECT id, val, s, e FROM fp_uk ORDER BY s;
+SELECT periods.drop_period('fp_uk_child', 'p', 'CASCADE');
+DROP TABLE fp_uk_child;
+SELECT periods.drop_period('fp_uk', 'p', 'CASCADE');
+DROP TABLE fp_uk;

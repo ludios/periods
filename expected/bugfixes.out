@@ -734,7 +734,7 @@ UPDATE fp_spk__for_portion_of_p SET val = 'b', s = 20, e = 30;
 ERROR:  duplicate key value violates unique constraint "fp_spk_pkey"
 DETAIL:  Key (id)=(1) already exists.
 CONTEXT:  SQL statement "INSERT INTO fp_spk (e, id, s, val) SELECT r.e, r.id, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_spk, '{"e": 20, "s": 10, "id": 1, "val": "a"}') AS r"
-PL/pgSQL function periods.update_portion_of() line 265 at EXECUTE
+PL/pgSQL function periods.update_portion_of() line 303 at EXECUTE
 SELECT id, val, s, e FROM fp_spk ORDER BY s;
  id | val | s  | e  
 ----+-----+----+----
@@ -2365,3 +2365,83 @@ SELECT periods.drop_period('bc_pat', 'p');
 
 DROP TABLE bc_pat;
 DROP TYPE bugfix_patternrange;
+/*
+ * FOR PORTION OF on a table with a temporal unique key — the standard's own
+ * use case — never worked: the slices were inserted before the edited row was
+ * shrunk to the portion, so the first slice overlapped the row and the unique
+ * key's exclusion constraint, which is not deferrable, rejected it.  The row
+ * is shrunk first now.  A child referencing the key sees only the final state
+ * (its check is deferred), and a key change inside the portion that uncovers
+ * it is still caught.
+ */
+CREATE TABLE fp_uk (id integer, val text, s integer, e integer, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('fp_uk', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_unique_key('fp_uk', ARRAY['id'], 'p', key_name => 'fp_uk_id_p');
+ add_unique_key 
+----------------
+ fp_uk_id_p
+(1 row)
+
+SELECT periods.add_for_portion_view('fp_uk', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+CREATE TABLE fp_uk_child (id integer, parent_id integer, s integer, e integer);
+SELECT periods.add_period('fp_uk_child', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_foreign_key('fp_uk_child', ARRAY['parent_id'], 'p', 'fp_uk_id_p', key_name => 'fp_uk_child_parent_id_p');
+     add_foreign_key     
+-------------------------
+ fp_uk_child_parent_id_p
+(1 row)
+
+INSERT INTO fp_uk VALUES (1, 'a', 10, 40);
+INSERT INTO fp_uk_child VALUES (1, 1, 15, 35);
+UPDATE fp_uk__for_portion_of_p SET val = 'b', s = 20, e = 30;
+SELECT id, val, s, e FROM fp_uk ORDER BY s;
+ id | val | s  | e  
+----+-----+----+----
+  1 | a   | 10 | 20
+  1 | b   | 20 | 30
+  1 | a   | 30 | 40
+(3 rows)
+
+/* Re-keying the middle slice leaves the child uncovered on [20,30). */
+UPDATE fp_uk__for_portion_of_p SET id = 2, s = 20, e = 30 WHERE id = 1;
+ERROR:  update or delete on table "fp_uk" violates foreign key constraint "fp_uk_child_parent_id_p" on table "fp_uk_child"
+CONTEXT:  PL/pgSQL function periods.validate_foreign_key_old_row(name,jsonb,boolean) line 151 at RAISE
+SQL statement "SELECT periods.validate_foreign_key_old_row(TG_ARGV[0], jold, true)"
+PL/pgSQL function periods.uk_update_check() line 23 at PERFORM
+SELECT id, val, s, e FROM fp_uk ORDER BY s;
+ id | val | s  | e  
+----+-----+----+----
+  1 | a   | 10 | 20
+  1 | b   | 20 | 30
+  1 | a   | 30 | 40
+(3 rows)
+
+SELECT periods.drop_period('fp_uk_child', 'p', 'CASCADE');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_uk_child;
+SELECT periods.drop_period('fp_uk', 'p', 'CASCADE');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_uk;

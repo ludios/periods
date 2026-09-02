@@ -85,11 +85,10 @@ $function$;
  *
  * The family is entered by the opclass's own input type rather than by the
  * range's subtype: a range over a domain is served by the base type's opclass,
- * and the two names differ.  Anything the lookup does not resolve to an
- * operator actually spelled "<" — a family whose ordering operator is named
- * something else, such as text_pattern_ops' "~<~" — falls back to the bare "<"
- * this has always emitted, rather than quietly changing what the constraint
- * means.
+ * and the two names differ.  The operator is emitted whatever it is called —
+ * text_pattern_ops' family orders by "~<~", and that is what the constraint
+ * says — so the bare "<" this has always emitted remains only as the fallback
+ * for a family with no ordering operator at all, which cannot back a range.
  *
  * add_period() creates the constraint from this and rename_following()
  * re-discovers a renamed one by comparing against it, so the two must agree;
@@ -296,6 +295,12 @@ $function$;
  * real value, not SQL NULL) — and a NULL bound is rejected with a real error
  * instead of a nonsense cast failure.  Container subtypes (arrays, hstore)
  * remain unsupported here, exactly as before.
+ *
+ * The slices are now inserted after the edited row has been shrunk to the
+ * portion, not before: a temporal unique key's exclusion constraint is not
+ * deferrable, so the first slice used to overlap the still-unshrunk row and
+ * fail, which kept FOR PORTION OF from working on exactly the tables it is
+ * meant for.
  */
 CREATE OR REPLACE FUNCTION periods.update_portion_of()
  RETURNS trigger
@@ -556,23 +561,15 @@ BEGIN
             info.table_name, TG_RELID::regclass;
     END IF;
 
-    IF pre_assigned THEN
-        /*
-         * Insert through jsonb_populate_record() so that arrays, composites,
-         * and friends are converted from their JSON form to their real types
-         * instead of being quoted as JSON text.  The explicit column list
-         * keeps the stripped generated columns out of the INSERT so they
-         * regenerate.  (JSON keeps no array bounds, so a non-1-based array's
-         * copies are renumbered from 1.)
-         */
-        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r',
-            info.table_name,
-            (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
-            (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
-            pre_row);
-    END IF;
-
     /*
+     * Shrink the edited row to the portion first and only then insert the
+     * slices around it.  The order matters: a temporal unique key's exclusion
+     * constraint is not deferrable, so a slice inserted while the row still
+     * spans its whole old period overlaps it and is rejected.  The foreign
+     * key checks were deferred above and see only the final state; a RESTRICT
+     * key on this table's unique key checks after each statement and may
+     * refuse the transient shrink, as it refused the old order's overlap.
+     *
      * Collect the changed columns and their new values.  Which columns
      * changed is still decided on the jsonb text representations, as before.
      */
@@ -585,7 +582,7 @@ BEGIN
 
     /*
      * Assign them from a jsonb_populate_record() of just those columns, for
-     * the same complex-type reasons as the slice INSERTs around this.  Only
+     * the same complex-type reasons as the slice INSERTs below it.  Only
      * the changed columns go into the record: converting the whole row would
      * choke on unchanged columns of types whose JSON form cannot be read
      * back (hstore, for one).
@@ -601,6 +598,22 @@ BEGIN
                    info.start_column_name,
                    to_lit
                   );
+
+    IF pre_assigned THEN
+        /*
+         * Insert through jsonb_populate_record() so that arrays, composites,
+         * and friends are converted from their JSON form to their real types
+         * instead of being quoted as JSON text.  The explicit column list
+         * keeps the stripped generated columns out of the INSERT so they
+         * regenerate.  (JSON keeps no array bounds, so a non-1-based array's
+         * copies are renumbered from 1.)
+         */
+        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r',
+            info.table_name,
+            (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
+            (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
+            pre_row);
+    END IF;
 
     IF post_assigned THEN
         /* Same jsonb_populate_record() dance as the pre_assigned INSERT. */
@@ -2690,6 +2703,16 @@ BEGIN
 END;
 $function$;
 
+/*
+ * rename_following() re-discovers a period's bounds check constraint by
+ * comparing every candidate's deparsed text against _bounds_check_def().  It
+ * used to try every pair of the table's columns as candidate start/end
+ * columns, calling pg_get_constraintdef() and the helper for each pair on
+ * every DDL command in the database; a few wide period tables made that cost
+ * seconds per statement.  A CHECK constraint's conkey lists exactly the
+ * columns its expression references, and no other column can appear in its
+ * text, so only those are tried now.
+ */
 CREATE OR REPLACE FUNCTION periods.rename_following()
  RETURNS event_trigger
  LANGUAGE plpgsql
@@ -2722,8 +2745,8 @@ BEGIN
             sa.attname, ea.attname, p.table_name, p.period_name)
         FROM periods.periods AS p
         JOIN pg_catalog.pg_constraint AS c ON (c.conrelid, c.conname) = (p.table_name, p.bounds_check_constraint)
-        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name
-        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name
+        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name AND sa.attnum = ANY (c.conkey)
+        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name AND ea.attnum = ANY (c.conkey)
         WHERE (p.start_column_name, p.end_column_name) <> (sa.attname, ea.attname)
           AND pg_catalog.pg_get_constraintdef(c.oid) = periods._bounds_check_def(p.range_type, sa.attname, ea.attname)
     LOOP
@@ -2738,9 +2761,9 @@ BEGIN
         SELECT pg_catalog.format('UPDATE periods.periods SET bounds_check_constraint = %L WHERE (table_name, period_name) = (%L::regclass, %L)',
             c.conname, p.table_name, p.period_name)
         FROM periods.periods AS p
-        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name
-        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name
-        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name
+        JOIN pg_catalog.pg_constraint AS c ON c.conrelid = p.table_name AND c.contype = 'c'
+        JOIN pg_catalog.pg_attribute AS sa ON sa.attrelid = p.table_name AND sa.attnum = ANY (c.conkey)
+        JOIN pg_catalog.pg_attribute AS ea ON ea.attrelid = p.table_name AND ea.attnum = ANY (c.conkey)
         WHERE p.bounds_check_constraint <> c.conname
           AND pg_catalog.pg_get_constraintdef(c.oid) = periods._bounds_check_def(p.range_type, sa.attname, ea.attname)
           AND (p.start_column_name, p.end_column_name) = (sa.attname, ea.attname)

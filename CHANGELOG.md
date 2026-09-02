@@ -124,6 +124,16 @@ extension keeps its name so that existing installations upgrade in place.
   - `drop_period()` of an application-time period no longer tears down the
     table's `system_time` triggers and SYSTEM VERSIONING machinery.
 
+  - `FOR PORTION OF` works on a table with a temporal unique key.  The slices
+    were inserted before the edited row was shrunk to the portion, so the
+    first slice overlapped it and the key's exclusion constraint, which is not
+    deferrable, rejected it.  The row is shrunk first now.
+
+  - `rename_following()` re-discovers a period's bounds constraint by looking
+    only at the columns the constraint references (`conkey`), instead of
+    testing every pair of the table's columns; on a database with a few wide
+    period tables that cross join had cost every DDL statement seconds.
+
   - Temporal foreign keys now prevent deleting or updating a referenced row
     while a child's period lies strictly inside the removed interval
     (issue #27); previously only children *containing* the whole interval
