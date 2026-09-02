@@ -103,35 +103,6 @@ extension keeps its name so that existing installations upgrade in place.
     period columns, and the C triggers ignore such catalog entries outright —
     also covering rows written by older versions or restored from dumps.
 
-### Changed
-
-  - The `ddl_command_end` event triggers (`rename_following`, `health_checks`)
-    return at once for commands that only create objects, and
-    `rename_following` re-examines a period's bounds constraint only when one
-    of its recorded columns has gone missing.  On a database with 200
-    versioned tables every `CREATE TEMP TABLE` used to pay about 80 ms for a
-    full audit of the extension's catalogs.
-
-  - Temporal foreign key checks: the child-side check validates the row being
-    written, found again by its key and period, instead of every row sharing
-    its key (a batch of N rows under one key cost O(N²) checks); the
-    parent-side check considers only children whose period overlaps the old
-    row's; row images are compared typed rather than as text literals, so
-    periods over array subtypes work on the parent side; and the update
-    triggers now carry a
-    `WHEN` condition, so an UPDATE that leaves the key and period unchanged is
-    not checked at all.  Foreign keys created by 1.2 keep their old update
-    triggers (constraint triggers cannot be replaced in place); drop and re-add
-    them to get the last of these.
-
-  - `health_checks()` looks the system-versioning helper functions up by name
-    (`to_regprocedure`) instead of rendering every `pg_proc` row as text and
-    comparing, and `rename_following()` writes its catalog fixes as plain
-    `UPDATE ... FROM` statements.
-
-  - `write_history()` returns before looking up the period when an UPDATE
-    changed only excluded columns.
-
 ### Removed
 
   - Support for PostgreSQL releases before 17.  Fresh installations of 7.0.0

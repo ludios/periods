@@ -625,6 +625,7 @@ write_history(PG_FUNCTION_ARGS)
 	Datum			old_start_datum;
 	Oid				history_id;
 	int				cmp;
+	bool			only_excluded_changed = false;
 
 	/*
 	 * Make sure this is being called as an AFTER ROW trigger.  Note:
@@ -659,9 +660,8 @@ write_history(PG_FUNCTION_ARGS)
 		old_row = trigdata->tg_trigtuple;
 		new_row = trigdata->tg_newtuple;
 
-		/* If only excluded columns have changed, don't write history. */
-		if (OnlyExcludedColumnsChanged(rel, old_row, new_row))
-			return PointerGetDatum(NULL);
+		/* Did only excluded columns change? */
+		only_excluded_changed = OnlyExcludedColumnsChanged(rel, old_row, new_row);
 	}
 	else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
 	{
@@ -690,7 +690,7 @@ write_history(PG_FUNCTION_ARGS)
 	 * with a trigger executed after generated_always_as_row_start_end().
 	 */
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event) ||
-		TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
+		(TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event) && !only_excluded_changed))
 	{
 		Datum	start_datum;
 		Datum	end_datum;
@@ -725,6 +725,10 @@ write_history(PG_FUNCTION_ARGS)
 		if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
 			return PointerGetDatum(NULL);
 	}
+
+	/* If only excluded columns have changed, don't write history. */
+	if (only_excluded_changed)
+		return PointerGetDatum(NULL);
 
 	/* Compare the OLD row's start with the transaction start */
 	old_start_datum = SPI_getbinval(old_row, tupledesc, start_num, &is_null);
