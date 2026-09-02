@@ -60,8 +60,7 @@ typedef struct InsertHistoryPlanEntry {
 	SPIPlanPtr qplan;
 } InsertHistoryPlanEntry;
 
-static HTAB *
-CreateInsertHistoryPlanHash(void) {
+static HTAB *CreateInsertHistoryPlanHash(void) {
 	HASHCTL ctl;
 
 	ctl.keysize   = sizeof(Oid);
@@ -70,8 +69,7 @@ CreateInsertHistoryPlanHash(void) {
 	return hash_create("Insert History Hash", 16, &ctl, HASH_ELEM | HASH_BLOBS);
 }
 
-static void
-GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **end_name) {
+static void GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **end_name) {
 	int            ret;
 	Datum          values[2];
 	SPITupleTable *tuptable;
@@ -157,8 +155,7 @@ GetPeriodColumnNames(Relation rel, char *period_name, char **start_name, char **
  * should be in another table, but users have requested the feature so let's do
  * it.
  */
-static bool
-OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row) {
+static bool OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row) {
 	int           ret;
 	int           i;
 	uint64        row;
@@ -315,8 +312,7 @@ OnlyExcludedColumnsChanged(Relation rel, HeapTuple old_row, HeapTuple new_row) {
  * period an error is raised.  If it doesn't have SYSTEM VERSIONING, then
  * InvalidOid is returned.
  */
-static Oid
-GetHistoryTable(Relation rel) {
+static Oid GetHistoryTable(Relation rel) {
 	int            ret;
 	Datum          values[1];
 	Oid            result;
@@ -383,8 +379,7 @@ GetHistoryTable(Relation rel) {
 	return result;
 }
 
-static Datum
-GetRowStart(Oid typeid) {
+static Datum GetRowStart(Oid typeid) {
 	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return TRANSACTION_TSTZ;
@@ -398,8 +393,7 @@ GetRowStart(Oid typeid) {
 	}
 }
 
-static Datum
-GetRowEnd(Oid typeid) {
+static Datum GetRowEnd(Oid typeid) {
 	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return INFINITE_TSTZ;
@@ -413,8 +407,7 @@ GetRowEnd(Oid typeid) {
 	}
 }
 
-static int
-CompareWithCurrentDatum(Oid typeid, Datum value) {
+static int CompareWithCurrentDatum(Oid typeid, Datum value) {
 	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return DatumGetInt32(DirectFunctionCall2(timestamp_cmp, value, TRANSACTION_TSTZ));
@@ -431,8 +424,7 @@ CompareWithCurrentDatum(Oid typeid, Datum value) {
 	}
 }
 
-static int
-CompareWithInfiniteDatum(Oid typeid, Datum value) {
+static int CompareWithInfiniteDatum(Oid typeid, Datum value) {
 	switch (typeid) {
 		case TIMESTAMPTZOID:
 			return DatumGetInt32(DirectFunctionCall2(timestamp_cmp, value, INFINITE_TSTZ));
@@ -449,8 +441,7 @@ CompareWithInfiniteDatum(Oid typeid, Datum value) {
 	}
 }
 
-Datum
-generated_always_as_row_start_end(PG_FUNCTION_ARGS) {
+Datum generated_always_as_row_start_end(PG_FUNCTION_ARGS) {
 	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
 	const char  *funcname = "generated_always_as_row_start_end";
 	Relation     rel;
@@ -526,8 +517,7 @@ generated_always_as_row_start_end(PG_FUNCTION_ARGS) {
 	return PointerGetDatum(new_row);
 }
 
-static void
-insert_into_history(Relation history_rel, HeapTuple history_tuple) {
+static void insert_into_history(Relation history_rel, HeapTuple history_tuple) {
 	InsertHistoryPlanEntry *hentry;
 	bool   found;
 	char  *schemaname    = SPI_getnspname(history_rel);
@@ -611,8 +601,7 @@ insert_into_history(Relation history_rel, HeapTuple history_tuple) {
 	}
 }
 
-Datum
-write_history(PG_FUNCTION_ARGS) {
+Datum write_history(PG_FUNCTION_ARGS) {
 	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
 	const char  *funcname = "write_history";
 	Relation     rel;
@@ -830,7 +819,6 @@ write_history(PG_FUNCTION_ARGS) {
  *
  * Returns the role's OID.
  */
-Datum
-outer_user(PG_FUNCTION_ARGS) {
+Datum outer_user(PG_FUNCTION_ARGS) {
 	PG_RETURN_OID(GetOuterUserId());
 }
