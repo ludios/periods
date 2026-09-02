@@ -174,9 +174,11 @@ for iter in $(seq 1 "$ITERS"); do
         done <<< "$SCENARIOS"
     done
     # Reset bloat and statistics so every iteration starts from the same
-    # place on both sides.
-    "$A_BIN/psql" -h "$PGHOST" -p "$A_PORT" -d "$DB" -qXc 'VACUUM ANALYZE;'
-    "$B_BIN/psql" -h "$PGHOST" -p "$B_PORT" -d "$DB" -qXc 'VACUUM ANALYZE;'
+    # place on both sides; nothing follows the last one.
+    if (( iter < ITERS )); then
+        "$A_BIN/psql" -h "$PGHOST" -p "$A_PORT" -d "$DB" -qXc 'VACUUM ANALYZE;'
+        "$B_BIN/psql" -h "$PGHOST" -p "$B_PORT" -d "$DB" -qXc 'VACUUM ANALYZE;'
+    fi
     echo "iteration $iter/$ITERS done"
 done
 

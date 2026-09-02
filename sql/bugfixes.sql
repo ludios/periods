@@ -1179,3 +1179,51 @@ SELECT periods.drop_period('fp_uk_child', 'p', 'CASCADE');
 DROP TABLE fp_uk_child;
 SELECT periods.drop_period('fp_uk', 'p', 'CASCADE');
 DROP TABLE fp_uk;
+
+/*
+ * Temporal foreign key checks are deferred and describe the row as it was
+ * written; what the table holds at COMMIT is what counts.  A batch of
+ * siblings under one key with one of them uncovered is rejected whole.
+ */
+
+CREATE TABLE fkd_parent (id integer, s integer, e integer);
+SELECT periods.add_period('fkd_parent', 'p', 's', 'e');
+SELECT periods.add_unique_key('fkd_parent', ARRAY['id'], 'p', key_name => 'fkd_parent_id_p');
+CREATE TABLE fkd_child (id integer, parent_id integer, s integer, e integer);
+SELECT periods.add_period('fkd_child', 'p', 's', 'e');
+SELECT periods.add_foreign_key('fkd_child', ARRAY['parent_id'], 'p', 'fkd_parent_id_p', key_name => 'fkd_child_parent_id_p');
+INSERT INTO fkd_parent VALUES (1, 0, 50), (1, 50, 100);
+
+INSERT INTO fkd_child
+    SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g
+    UNION ALL SELECT 21, 1, 99, 101;
+INSERT INTO fkd_child SELECT g, 1, g, g + 1 FROM generate_series(1, 20) AS g;
+SELECT count(*) AS children FROM fkd_child;
+
+BEGIN;
+INSERT INTO fkd_child VALUES (40, 1, 99, 101);
+DELETE FROM fkd_child WHERE id = 40;
+COMMIT;
+BEGIN;
+UPDATE fkd_child SET parent_id = 999 WHERE id = 1;
+UPDATE fkd_child SET parent_id = 1 WHERE id = 1;
+COMMIT;
+BEGIN;
+INSERT INTO fkd_child VALUES (41, 1, 10, 11);
+UPDATE fkd_child SET parent_id = 999 WHERE id = 41;
+COMMIT;
+SELECT count(*) AS children FROM fkd_child;
+
+SELECT periods.drop_period('fkd_child', 'p', 'CASCADE');
+DROP TABLE fkd_child;
+SELECT periods.drop_period('fkd_parent', 'p', 'CASCADE');
+DROP TABLE fkd_parent;
+
+/* A unique key adopting the PRIMARY KEY keeps following column renames. */
+CREATE TABLE ukpk (id integer, s integer, e integer, PRIMARY KEY (id, s, e));
+SELECT periods.add_period('ukpk', 'p', 's', 'e');
+SELECT periods.add_unique_key('ukpk', ARRAY['id'], 'p', key_name => 'ukpk_id_p', unique_constraint => 'ukpk_pkey');
+ALTER TABLE ukpk RENAME COLUMN id TO ident;
+SELECT column_names, unique_constraint FROM periods.unique_keys WHERE key_name = 'ukpk_id_p';
+SELECT periods.drop_period('ukpk', 'p', 'CASCADE');
+DROP TABLE ukpk;
