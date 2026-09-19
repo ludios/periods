@@ -1,6 +1,7 @@
 -- Model-output: Claude Fable 5
 -- Model-output: Claude Opus 4.8
 -- Model-output: Claude Opus 5
+-- Model-output: Claude Fable 5.1
 /*
  * Regression tests for bugs found in the 2026-08 code review
  * (ai-code-reviews/claude.md).  Section markers below refer to that
@@ -1227,3 +1228,54 @@ ALTER TABLE ukpk RENAME COLUMN id TO ident;
 SELECT column_names, unique_constraint FROM periods.unique_keys WHERE key_name = 'ukpk_id_p';
 SELECT periods.drop_period('ukpk', 'p', 'CASCADE');
 DROP TABLE ukpk;
+
+/*
+ * update_portion_of() built the shrink UPDATE's new values and the slice
+ * INSERTs with jsonb_populate_record(NULL::table, ...): a whole record made
+ * from only the columns present in the JSON, with every other column NULL.
+ * A column of a NOT NULL domain type is checked as the record is built, so
+ * any such column the edit left alone, or that regenerates, or that the view
+ * did not carry, made FOR PORTION OF fail outright.
+ */
+
+CREATE DOMAIN fp_req_text AS text NOT NULL;
+CREATE DOMAIN fp_req_int AS integer NOT NULL;
+
+/* An untouched NOT NULL domain column, with and without a split. */
+CREATE TABLE fp_dom_col (id serial PRIMARY KEY, val text, req fp_req_text, s integer, e integer);
+SELECT periods.add_period('fp_dom_col', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_dom_col', 'p');
+INSERT INTO fp_dom_col (val, req, s, e) VALUES ('a', 'x', 10, 40);
+UPDATE fp_dom_col__for_portion_of_p SET val = 'b';
+UPDATE fp_dom_col__for_portion_of_p SET val = 'c', s = 20, e = 30;
+SELECT id, val, req, s, e FROM fp_dom_col ORDER BY s;
+SELECT periods.drop_period('fp_dom_col', 'p');
+DROP TABLE fp_dom_col;
+
+/* A NOT NULL domain on a generated column, which the slices leave out so
+ * that it regenerates. */
+CREATE TABLE fp_dom_gen (id serial PRIMARY KEY, val integer,
+                         twice fp_req_int GENERATED ALWAYS AS (val * 2) STORED, s integer, e integer);
+SELECT periods.add_period('fp_dom_gen', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_dom_gen', 'p');
+INSERT INTO fp_dom_gen (val, s, e) VALUES (4, 10, 40);
+UPDATE fp_dom_gen__for_portion_of_p SET val = 5, s = 20, e = 30;
+SELECT id, val, twice, s, e FROM fp_dom_gen ORDER BY s;
+SELECT periods.drop_period('fp_dom_gen', 'p');
+DROP TABLE fp_dom_gen;
+
+/* A NOT NULL domain column added after the view was created, which the view
+ * (and so the trigger's row images) does not carry.  The slices copy the
+ * row's own value of it. */
+CREATE TABLE fp_dom_late (id serial PRIMARY KEY, val text, s integer, e integer);
+SELECT periods.add_period('fp_dom_late', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_dom_late', 'p');
+ALTER TABLE fp_dom_late ADD COLUMN later fp_req_text DEFAULT 'default';
+INSERT INTO fp_dom_late (val, later, s, e) VALUES ('a', 'explicit', 10, 40);
+UPDATE fp_dom_late__for_portion_of_p SET val = 'b', s = 20, e = 30;
+SELECT id, val, later, s, e FROM fp_dom_late ORDER BY s;
+SELECT periods.drop_period('fp_dom_late', 'p');
+DROP TABLE fp_dom_late;
+
+DROP DOMAIN fp_req_text;
+DROP DOMAIN fp_req_int;
