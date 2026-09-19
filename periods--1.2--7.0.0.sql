@@ -1,6 +1,7 @@
 -- Model-output: Claude Fable 5
 -- Model-output: Claude Opus 4.8
 -- Model-output: Claude Opus 5
+-- Model-output: Claude Fable 5.1
 /* periods--1.2--7.0.0.sql: bug fixes on top of the 1.2 schema (no catalog changes) */
 
 /*
@@ -334,6 +335,14 @@ $function$;
  * deferrable, so the first slice used to overlap the still-unshrunk row and
  * fail, which kept FOR PORTION OF from working on exactly the tables it is
  * meant for.
+ *
+ * The shrink starts from the row itself and the slices from the trigger's
+ * old row: only the columns the edit assigns pass through JSON (and arrive
+ * as their real types, so arrays and composites work); every other column is
+ * copied as it is.  1.2 quoted the JSON text of every column into the slice
+ * INSERTs, which broke arrays, composites and hstore outright, and a whole
+ * record built from the assigned columns alone would check a NOT NULL domain
+ * column the edit leaves alone as NULL.
  */
 CREATE OR REPLACE FUNCTION periods.update_portion_of()
  RETURNS trigger
@@ -358,15 +367,15 @@ DECLARE
     bstart_lit text;
     bend_lit text;
 
-    pre_row jsonb;
     new_row jsonb;
-    post_row jsonb;
     pre_assigned boolean;
     post_assigned boolean;
 
     where_clause text;
     missing_pk_columns bigint;
     changed_row jsonb;
+    slice_columns text;
+    slice_values text;
 
     TEST_SQL CONSTANT text :=
         'VALUES (CAST(%2$L AS %1$s) < CAST(%3$L AS %1$s) AND '
@@ -449,9 +458,7 @@ BEGIN
         bend_lit := bendval #>> '{}';
     END IF;
 
-    pre_row := jold;
     new_row := jnew;
-    post_row := jold;
 
     /* Reset the period columns */
     new_row := jsonb_set(new_row, ARRAY[info.start_column_name], bstartval);
@@ -466,7 +473,6 @@ BEGIN
     EXECUTE format(TEST_SQL, info.datatype, bstart_lit, from_lit, bend_lit) INTO test;
     IF test THEN
         pre_assigned := true;
-        pre_row := jsonb_set(pre_row, ARRAY[info.end_column_name], fromval);
         new_row := jsonb_set(new_row, ARRAY[info.start_column_name], fromval);
     END IF;
 
@@ -475,7 +481,6 @@ BEGIN
     IF test THEN
         post_assigned := true;
         new_row := jsonb_set(new_row, ARRAY[info.end_column_name], toval::jsonb);
-        post_row := jsonb_set(post_row, ARRAY[info.start_column_name], toval::jsonb);
     END IF;
 
     IF pre_assigned OR post_assigned THEN
@@ -483,32 +488,31 @@ BEGIN
         SET CONSTRAINTS ALL DEFERRED;
 
         /*
-         * Find and remove all generated columns from pre_row and post_row.
-         * SQL:2016 15.13 GR 10)b)i)
+         * Find the generated columns, which the slices leave out so that they
+         * regenerate.  SQL:2016 15.13 GR 10)b)i)
          *
-         * We also remove columns that own a sequence as those are a form of
-         * generated column.  We do not, however, remove columns that default
-         * to nextval() without owning the underlying sequence.
+         * Columns that own a sequence count as generated too, as those are a
+         * form of generated column.  Columns that default to nextval() without
+         * owning the underlying sequence do not.
          *
-         * Columns belonging to a SYSTEM_TIME period are also removed.
+         * Columns belonging to a SYSTEM_TIME period count as well.
          *
-         * In addition to what the standard calls for, we also remove any
-         * columns belonging to primary keys — but only if a column or domain
-         * DEFAULT can regenerate them.  One without any default (say the id
-         * of a temporal PRIMARY KEY (id, start, end)) cannot regenerate, so
-         * the slices must keep its value.  And the period's own bound columns
-         * are never removed: the slices carry freshly computed bounds, which
-         * no DEFAULT could know.
+         * In addition to what the standard calls for, so do columns belonging
+         * to primary keys — but only if a column or domain DEFAULT can
+         * regenerate them.  One without any default (say the id of a temporal
+         * PRIMARY KEY (id, start, end)) cannot regenerate, so the slices must
+         * keep its value.  And the period's own bound columns never count: the
+         * slices carry freshly computed bounds, which no DEFAULT could know.
          */
         EXECUTE GENERATED_COLUMNS_SQL
         INTO generated_columns
         USING info.table_name, info.start_column_name, info.end_column_name;
 
-        /* There may not be any generated columns. */
-        IF generated_columns IS NOT NULL THEN
-            pre_row := pre_row - generated_columns;
-            post_row := post_row - generated_columns;
-        END IF;
+        /* Every other column the view carries goes into the slices. */
+        SELECT string_agg(quote_ident(u.k), ', ' ORDER BY u.k),
+               string_agg('r.' || quote_ident(u.k), ', ' ORDER BY u.k)
+        INTO slice_columns, slice_values
+        FROM jsonb_object_keys(jold - coalesce(generated_columns, '{}')) AS u (k);
     END IF;
 
     /*
@@ -518,12 +522,11 @@ BEGIN
      * old view row (for example because it was renamed or added underneath the
      * view), refuse to guess rather than risk touching the wrong rows.
      */
-    SELECT string_agg(format('%I = %L', a.attname, j.value), ' AND '),
-           count(*) FILTER (WHERE j.key IS NULL)
+    SELECT string_agg(format('periods_target.%I = %L', a.attname, jold ->> a.attname), ' AND '),
+           count(*) FILTER (WHERE NOT jold ? a.attname::text)
     INTO where_clause, missing_pk_columns
     FROM pg_catalog.pg_constraint AS c
     JOIN pg_catalog.pg_attribute AS a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
-    LEFT JOIN pg_catalog.jsonb_each_text(jold) AS j ON j.key = a.attname
     WHERE c.conrelid = info.table_name
       AND c.contype = 'p';
 
@@ -552,13 +555,15 @@ BEGIN
          ) AS c;
 
     /*
-     * Assign them from a jsonb_populate_record() of just those columns, for
-     * the same complex-type reasons as the slice INSERTs below it.  Only
-     * the changed columns go into the record: converting the whole row would
-     * choke on unchanged columns of types whose JSON form cannot be read
-     * back (hstore, for one).
+     * Assign them through a jsonb_populate_record() over the row itself, so
+     * that arrays, composites and friends are converted from their JSON form
+     * to their real types instead of being quoted as JSON text.  The row
+     * supplies every column the edit leaves alone as it is: those are never
+     * converted (some types cannot be read back from JSON — hstore, for one)
+     * and a NOT NULL domain among them is not checked as NULL, which is what
+     * a record built from the changed columns alone would do.
      */
-    EXECUTE format('UPDATE %1$s SET (%2$s) = (SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r) WHERE %5$s AND %6$I > %7$L AND %8$I < %9$L',
+    EXECUTE format('UPDATE %1$s AS periods_target SET (%2$s) = (SELECT %3$s FROM pg_catalog.jsonb_populate_record(periods_target.*, %4$L) AS r) WHERE %5$s AND %6$I > %7$L AND %8$I < %9$L',
                    info.table_name,
                    (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(changed_row) AS u (k)),
                    (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(changed_row) AS u (k)),
@@ -570,29 +575,26 @@ BEGIN
                    to_lit
                   );
 
+    /*
+     * The slices are copies of the old row with their own bounds, made the
+     * same way over OLD itself: the view's row type is fixed for this
+     * trigger, so it can be passed typed, and it holds the row as it was
+     * before the edit, so a BEFORE UPDATE trigger's changes to the edited
+     * row stay inside the portion.  The explicit column list keeps the
+     * generated columns out of the INSERT so that they regenerate.
+     */
     IF pre_assigned THEN
-        /*
-         * Insert through jsonb_populate_record() so that arrays, composites,
-         * and friends are converted from their JSON form to their real types
-         * instead of being quoted as JSON text.  The explicit column list
-         * keeps the stripped generated columns out of the INSERT so they
-         * regenerate.  (JSON keeps no array bounds, so a non-1-based array's
-         * copies are renumbered from 1.)
-         */
-        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r',
-            info.table_name,
-            (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
-            (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(pre_row) AS u (k)),
-            pre_row);
+        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record($1, %4$L) AS r',
+            info.table_name, slice_columns, slice_values,
+            jsonb_build_object(info.end_column_name, fromval))
+        USING OLD;
     END IF;
 
     IF post_assigned THEN
-        /* Same jsonb_populate_record() dance as the pre_assigned INSERT. */
-        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record(NULL::%1$s, %4$L) AS r',
-            info.table_name,
-            (SELECT string_agg(quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(post_row) AS u (k)),
-            (SELECT string_agg('r.' || quote_ident(k), ', ' ORDER BY k) FROM jsonb_object_keys(post_row) AS u (k)),
-            post_row);
+        EXECUTE format('INSERT INTO %1$s (%2$s) SELECT %3$s FROM pg_catalog.jsonb_populate_record($1, %4$L) AS r',
+            info.table_name, slice_columns, slice_values,
+            jsonb_build_object(info.start_column_name, toval))
+        USING OLD;
     END IF;
 
     RETURN NEW;

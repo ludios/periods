@@ -729,8 +729,8 @@ INSERT INTO fp_spk VALUES (1, 'a', 10, 40);
 UPDATE fp_spk__for_portion_of_p SET val = 'b', s = 20, e = 30;
 ERROR:  duplicate key value violates unique constraint "fp_spk_pkey"
 DETAIL:  Key (id)=(1) already exists.
-CONTEXT:  SQL statement "INSERT INTO fp_spk (e, id, s, val) SELECT r.e, r.id, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_spk, '{"e": 20, "s": 10, "id": 1, "val": "a"}') AS r"
-PL/pgSQL function periods.update_portion_of() line 241 at EXECUTE
+CONTEXT:  SQL statement "INSERT INTO fp_spk (e, id, s, val) SELECT r.e, r.id, r.s, r.val FROM pg_catalog.jsonb_populate_record($1, '{"e": 20}') AS r"
+PL/pgSQL function periods.update_portion_of() line 237 at EXECUTE
 SELECT id, val, s, e FROM fp_spk ORDER BY s;
  id | val | s  | e  
 ----+-----+----+----
@@ -893,9 +893,9 @@ SELECT periods.drop_period('fp_comp', 'p');
 
 DROP TABLE fp_comp;
 DROP TYPE fp_pair;
-/* Known limitation: JSON carries no array bounds, so the slices' copies of a
- * non-1-based array are renumbered from 1 (the row updated in place keeps
- * its bounds).  This documents that behavior. */
+/* A column the edit leaves alone is copied as it is, so the slices keep a
+ * non-1-based array's bounds.  (An array assigned through the view is
+ * renumbered from 1: JSON carries no bounds.) */
 CREATE TABLE fp_lb (id serial PRIMARY KEY, val integer, tags integer[], s integer, e integer);
 SELECT periods.add_period('fp_lb', 'p', 's', 'e');
  add_period 
@@ -914,9 +914,9 @@ UPDATE fp_lb__for_portion_of_p SET val = 999, s = 20, e = 30;
 SELECT id, val, tags, array_dims(tags) AS dims, s, e FROM fp_lb ORDER BY s;
  id | val |     tags      | dims  | s  | e  
 ----+-----+---------------+-------+----+----
-  2 | 100 | {1,2,3}       | [1:3] | 10 | 20
+  2 | 100 | [0:2]={1,2,3} | [0:2] | 10 | 20
   1 | 999 | [0:2]={1,2,3} | [0:2] | 20 | 30
-  3 | 100 | {1,2,3}       | [1:3] | 30 | 40
+  3 | 100 | [0:2]={1,2,3} | [0:2] | 30 | 40
 (3 rows)
 
 SELECT periods.drop_period('fp_lb', 'p');
@@ -2577,18 +2577,14 @@ SELECT periods.add_for_portion_view('fp_dom_col', 'p');
 
 INSERT INTO fp_dom_col (val, req, s, e) VALUES ('a', 'x', 10, 40);
 UPDATE fp_dom_col__for_portion_of_p SET val = 'b';
-ERROR:  domain fp_req_text does not allow null values
-CONTEXT:  SQL statement "UPDATE fp_dom_col SET (val) = (SELECT r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_dom_col, '{"val": "b"}') AS r) WHERE id = '1' AND e > '10' AND s < '40'"
-PL/pgSQL function periods.update_portion_of() line 220 at EXECUTE
 UPDATE fp_dom_col__for_portion_of_p SET val = 'c', s = 20, e = 30;
-ERROR:  domain fp_req_text does not allow null values
-CONTEXT:  SQL statement "UPDATE fp_dom_col SET (e, s, val) = (SELECT r.e, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_dom_col, '{"e": 30, "s": 20, "val": "c"}') AS r) WHERE id = '1' AND e > '20' AND s < '30'"
-PL/pgSQL function periods.update_portion_of() line 220 at EXECUTE
 SELECT id, val, req, s, e FROM fp_dom_col ORDER BY s;
  id | val | req | s  | e  
 ----+-----+-----+----+----
-  1 | a   | x   | 10 | 40
-(1 row)
+  2 | b   | x   | 10 | 20
+  1 | c   | x   | 20 | 30
+  3 | b   | x   | 30 | 40
+(3 rows)
 
 SELECT periods.drop_period('fp_dom_col', 'p');
  drop_period 
@@ -2615,14 +2611,13 @@ SELECT periods.add_for_portion_view('fp_dom_gen', 'p');
 
 INSERT INTO fp_dom_gen (val, s, e) VALUES (4, 10, 40);
 UPDATE fp_dom_gen__for_portion_of_p SET val = 5, s = 20, e = 30;
-ERROR:  domain fp_req_int does not allow null values
-CONTEXT:  SQL statement "UPDATE fp_dom_gen SET (e, s, val) = (SELECT r.e, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_dom_gen, '{"e": 30, "s": 20, "val": 5}') AS r) WHERE id = '1' AND e > '20' AND s < '30'"
-PL/pgSQL function periods.update_portion_of() line 220 at EXECUTE
 SELECT id, val, twice, s, e FROM fp_dom_gen ORDER BY s;
  id | val | twice | s  | e  
 ----+-----+-------+----+----
-  1 |   4 |     8 | 10 | 40
-(1 row)
+  2 |   4 |     8 | 10 | 20
+  1 |   5 |    10 | 20 | 30
+  3 |   4 |     8 | 30 | 40
+(3 rows)
 
 SELECT periods.drop_period('fp_dom_gen', 'p');
  drop_period 
@@ -2632,8 +2627,8 @@ SELECT periods.drop_period('fp_dom_gen', 'p');
 
 DROP TABLE fp_dom_gen;
 /* A NOT NULL domain column added after the view was created, which the view
- * (and so the trigger's row images) does not carry.  The slices copy the
- * row's own value of it. */
+ * (and so the trigger's row images) does not carry: the slices take its
+ * DEFAULT, as in 1.2. */
 CREATE TABLE fp_dom_late (id serial PRIMARY KEY, val text, s integer, e integer);
 SELECT periods.add_period('fp_dom_late', 'p', 's', 'e');
  add_period 
@@ -2650,14 +2645,13 @@ SELECT periods.add_for_portion_view('fp_dom_late', 'p');
 ALTER TABLE fp_dom_late ADD COLUMN later fp_req_text DEFAULT 'default';
 INSERT INTO fp_dom_late (val, later, s, e) VALUES ('a', 'explicit', 10, 40);
 UPDATE fp_dom_late__for_portion_of_p SET val = 'b', s = 20, e = 30;
-ERROR:  domain fp_req_text does not allow null values
-CONTEXT:  SQL statement "UPDATE fp_dom_late SET (e, s, val) = (SELECT r.e, r.s, r.val FROM pg_catalog.jsonb_populate_record(NULL::fp_dom_late, '{"e": 30, "s": 20, "val": "b"}') AS r) WHERE id = '1' AND e > '20' AND s < '30'"
-PL/pgSQL function periods.update_portion_of() line 220 at EXECUTE
 SELECT id, val, later, s, e FROM fp_dom_late ORDER BY s;
  id | val |  later   | s  | e  
 ----+-----+----------+----+----
-  1 | a   | explicit | 10 | 40
-(1 row)
+  2 | a   | default  | 10 | 20
+  1 | b   | explicit | 20 | 30
+  3 | a   | default  | 30 | 40
+(3 rows)
 
 SELECT periods.drop_period('fp_dom_late', 'p');
  drop_period 
@@ -2668,3 +2662,71 @@ SELECT periods.drop_period('fp_dom_late', 'p');
 DROP TABLE fp_dom_late;
 DROP DOMAIN fp_req_text;
 DROP DOMAIN fp_req_int;
+/* The slices copy the old row as the trigger saw it: a BEFORE UPDATE
+ * trigger's changes to the edited row stay inside the portion. */
+CREATE FUNCTION fp_bump_rev() RETURNS trigger LANGUAGE plpgsql AS
+$$ BEGIN NEW.rev := OLD.rev + 1; RETURN NEW; END $$;
+CREATE TABLE fp_rev (id serial PRIMARY KEY, val text, rev integer DEFAULT 0, s integer, e integer);
+CREATE TRIGGER fp_rev_bump BEFORE UPDATE ON fp_rev FOR EACH ROW EXECUTE FUNCTION fp_bump_rev();
+SELECT periods.add_period('fp_rev', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_for_portion_view('fp_rev', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+INSERT INTO fp_rev (val, s, e) VALUES ('a', 10, 40);
+UPDATE fp_rev__for_portion_of_p SET val = 'b', s = 20, e = 30;
+SELECT id, val, rev, s, e FROM fp_rev ORDER BY s;
+ id | val | rev | s  | e  
+----+-----+-----+----+----
+  2 | a   |   0 | 10 | 20
+  1 | b   |   1 | 20 | 30
+  3 | a   |   0 | 30 | 40
+(3 rows)
+
+SELECT periods.drop_period('fp_rev', 'p');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_rev;
+DROP FUNCTION fp_bump_rev();
+/* A primary key regenerated from an edited column changes under the edit;
+ * the slices must not depend on looking the row up again afterwards. */
+CREATE TABLE fp_gpk (id integer GENERATED ALWAYS AS (s) STORED PRIMARY KEY, val text, s integer, e integer);
+SELECT periods.add_period('fp_gpk', 'p', 's', 'e');
+ add_period 
+------------
+ t
+(1 row)
+
+SELECT periods.add_for_portion_view('fp_gpk', 'p');
+ add_for_portion_view 
+----------------------
+ t
+(1 row)
+
+INSERT INTO fp_gpk (val, s, e) VALUES ('a', 10, 40);
+UPDATE fp_gpk__for_portion_of_p SET val = 'b', s = 20, e = 30;
+SELECT id, val, s, e FROM fp_gpk ORDER BY s;
+ id | val | s  | e  
+----+-----+----+----
+ 10 | a   | 10 | 20
+ 20 | b   | 20 | 30
+ 30 | a   | 30 | 40
+(3 rows)
+
+SELECT periods.drop_period('fp_gpk', 'p');
+ drop_period 
+-------------
+ t
+(1 row)
+
+DROP TABLE fp_gpk;

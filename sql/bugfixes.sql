@@ -390,9 +390,9 @@ SELECT periods.drop_period('fp_comp', 'p');
 DROP TABLE fp_comp;
 DROP TYPE fp_pair;
 
-/* Known limitation: JSON carries no array bounds, so the slices' copies of a
- * non-1-based array are renumbered from 1 (the row updated in place keeps
- * its bounds).  This documents that behavior. */
+/* A column the edit leaves alone is copied as it is, so the slices keep a
+ * non-1-based array's bounds.  (An array assigned through the view is
+ * renumbered from 1: JSON carries no bounds.) */
 CREATE TABLE fp_lb (id serial PRIMARY KEY, val integer, tags integer[], s integer, e integer);
 SELECT periods.add_period('fp_lb', 'p', 's', 'e');
 SELECT periods.add_for_portion_view('fp_lb', 'p');
@@ -1265,8 +1265,8 @@ SELECT periods.drop_period('fp_dom_gen', 'p');
 DROP TABLE fp_dom_gen;
 
 /* A NOT NULL domain column added after the view was created, which the view
- * (and so the trigger's row images) does not carry.  The slices copy the
- * row's own value of it. */
+ * (and so the trigger's row images) does not carry: the slices take its
+ * DEFAULT, as in 1.2. */
 CREATE TABLE fp_dom_late (id serial PRIMARY KEY, val text, s integer, e integer);
 SELECT periods.add_period('fp_dom_late', 'p', 's', 'e');
 SELECT periods.add_for_portion_view('fp_dom_late', 'p');
@@ -1279,3 +1279,29 @@ DROP TABLE fp_dom_late;
 
 DROP DOMAIN fp_req_text;
 DROP DOMAIN fp_req_int;
+
+/* The slices copy the old row as the trigger saw it: a BEFORE UPDATE
+ * trigger's changes to the edited row stay inside the portion. */
+CREATE FUNCTION fp_bump_rev() RETURNS trigger LANGUAGE plpgsql AS
+$$ BEGIN NEW.rev := OLD.rev + 1; RETURN NEW; END $$;
+CREATE TABLE fp_rev (id serial PRIMARY KEY, val text, rev integer DEFAULT 0, s integer, e integer);
+CREATE TRIGGER fp_rev_bump BEFORE UPDATE ON fp_rev FOR EACH ROW EXECUTE FUNCTION fp_bump_rev();
+SELECT periods.add_period('fp_rev', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_rev', 'p');
+INSERT INTO fp_rev (val, s, e) VALUES ('a', 10, 40);
+UPDATE fp_rev__for_portion_of_p SET val = 'b', s = 20, e = 30;
+SELECT id, val, rev, s, e FROM fp_rev ORDER BY s;
+SELECT periods.drop_period('fp_rev', 'p');
+DROP TABLE fp_rev;
+DROP FUNCTION fp_bump_rev();
+
+/* A primary key regenerated from an edited column changes under the edit;
+ * the slices must not depend on looking the row up again afterwards. */
+CREATE TABLE fp_gpk (id integer GENERATED ALWAYS AS (s) STORED PRIMARY KEY, val text, s integer, e integer);
+SELECT periods.add_period('fp_gpk', 'p', 's', 'e');
+SELECT periods.add_for_portion_view('fp_gpk', 'p');
+INSERT INTO fp_gpk (val, s, e) VALUES ('a', 10, 40);
+UPDATE fp_gpk__for_portion_of_p SET val = 'b', s = 20, e = 30;
+SELECT id, val, s, e FROM fp_gpk ORDER BY s;
+SELECT periods.drop_period('fp_gpk', 'p');
+DROP TABLE fp_gpk;

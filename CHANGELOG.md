@@ -117,8 +117,10 @@ extension keeps its name so that existing installations upgrade in place.
   - `FOR PORTION OF` updates now work on tables whose primary key does not
     regenerate itself (e.g. a temporal `PRIMARY KEY (id, start, end)`), and on
     tables with array or composite columns — including updating such columns
-    through the view.  Array lower bounds other than 1 are not preserved in
-    the re-inserted slices (JSON carries none).
+    through the view.  Columns the edit leaves alone are copied as they are
+    (an `hstore` column, or a non-1-based array, no longer gets in the way);
+    an array assigned through the view loses lower bounds other than 1 in the
+    re-inserted slices (JSON carries none).
 
 ### Fixed
 

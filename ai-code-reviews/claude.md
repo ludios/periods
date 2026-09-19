@@ -28,8 +28,11 @@ PostgreSQL 17.11 and 18.6.
 - **Fixed (second pass, after codex credits returned):** §2.3(a) (`894135b`, `55cf391` — PK columns
   are stripped from slices only when a column or domain DEFAULT regenerates them, and period bound
   columns never are) and §2.3(c) (`8df93f6`, `c6fdf71` — slice INSERTs and the central UPDATE go
-  through `jsonb_populate_record`, the latter over changed columns only; array lower bounds are
-  documented as not preserved).  Every commit batch has a completed codex review.
+  through `jsonb_populate_record` over the row itself, converting only the assigned columns — a
+  record built from the changed columns alone checked NOT NULL domain columns the edit left alone
+  as NULL, caught in the 2026-09-19 deployment review; untouched columns are copied as they are, and
+  only an array assigned through the view loses non-1 lower bounds).  Every commit batch has a
+  completed codex review.
 - **Security (§3), all three fixed.**
   - **§3.1** (`115026f`, `93d9c92`): the SQL injection through period column names in
     `add_system_versioning` is closed — the generated helper-function bodies are built with an inner
